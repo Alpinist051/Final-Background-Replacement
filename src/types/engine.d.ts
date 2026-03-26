@@ -46,6 +46,9 @@ export interface EngineStats {
   droppedFrames: number;
   processingWidth: number;
   processingHeight: number;
+  foregroundRatio: number;
+  maskMean: number;
+  confidenceMean: number;
 }
 
 export interface EngineState {

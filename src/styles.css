@@ -389,6 +389,35 @@ button {
   font-size: 0.95rem;
 }
 
+.debug-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px dashed rgba(103, 232, 249, 0.24);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  position: relative;
+  z-index: 1;
+}
+
+.debug-strip div {
+  display: grid;
+  gap: 4px;
+}
+
+.debug-strip span {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.debug-strip strong {
+  font-size: 0.92rem;
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;

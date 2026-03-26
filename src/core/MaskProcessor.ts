@@ -6,6 +6,9 @@ export interface ProcessedMask {
   alphaMask: Float32Array;
   confidenceMask: Float32Array;
   motionMagnitude: number;
+  foregroundRatio: number;
+  maskMean: number;
+  confidenceMean: number;
 }
 
 function createFloatBuffer(length: number, fill = 0) {
@@ -63,6 +66,9 @@ export class MaskProcessor {
 
     const alphaMask = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount, 1.0);
+    let foregroundPixels = 0;
+    let alphaSum = 0;
+    let confidenceSum = 0;
 
     for (let i = 0; i < pixelCount; i++) {
       const cat = dilated[i];
@@ -73,8 +79,11 @@ export class MaskProcessor {
         // Keep detected foreground opaque so the matte reads clearly,
         // while preserving a tiny amount of soft edge guidance.
         alphaMask[i] = Math.max(0.94, confidence * 0.98);
+        foregroundPixels += 1;
       }
       confidenceMask[i] = confidence;
+      alphaSum += alphaMask[i];
+      confidenceSum += confidence;
     }
 
     // Precise motion magnitude for fast-motion boost
@@ -89,7 +98,14 @@ export class MaskProcessor {
 
     this.previousCategoryMask = new Uint8Array(dilated);
 
-    return { alphaMask, confidenceMask, motionMagnitude };
+    return {
+      alphaMask,
+      confidenceMask,
+      motionMagnitude,
+      foregroundRatio: foregroundPixels / pixelCount,
+      maskMean: alphaSum / pixelCount,
+      confidenceMean: confidenceSum / pixelCount
+    };
   }
 
   reset() {

@@ -66,6 +66,7 @@ let processingHeight = 720;
 let degraded = false;
 let lowFpsStreak = 0;
 let tickHandle: number | null = null;
+let lastMaskWarningAt = 0;
 const TARGET_FPS = 30;
 const LOW_FPS_THRESHOLD = 25;
 const LOW_FPS_FRAMES_BEFORE_DROP = 5;
@@ -240,6 +241,13 @@ async function processTick() {
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
   const renderStart = performance.now();
 
+  if ((processedMask.foregroundRatio < 0.01 || processedMask.foregroundRatio > 0.99) && performance.now() - lastMaskWarningAt > 3000) {
+    lastMaskWarningAt = performance.now();
+    console.warn(
+      `Foreground mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage, mean ${processedMask.maskMean.toFixed(2)}).`
+    );
+  }
+
   const renderArgs: RenderFrameArgs = {
     frame: processedBitmap,
     alphaMask: processedMask.alphaMask,
@@ -263,7 +271,10 @@ async function processTick() {
     motion: combinedMotion,
     droppedFrames: 0,
     processingWidth,
-    processingHeight
+    processingHeight,
+    foregroundRatio: processedMask.foregroundRatio,
+    maskMean: processedMask.maskMean,
+    confidenceMean: processedMask.confidenceMean
   });
 
   applyQualityFallback(fps);
@@ -335,5 +346,6 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     previousLuma = null;
     degraded = false;
     lowFpsStreak = 0;
+    lastMaskWarningAt = 0;
   }
 };

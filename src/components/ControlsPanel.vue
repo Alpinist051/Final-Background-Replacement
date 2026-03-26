@@ -45,6 +45,25 @@
       </div>
     </section>
 
+    <section class="debug-strip">
+      <div>
+        <span>Mask fill</span>
+        <strong>{{ (stats.foregroundRatio * 100).toFixed(1) }}%</strong>
+      </div>
+      <div>
+        <span>Mask mean</span>
+        <strong>{{ stats.maskMean.toFixed(2) }}</strong>
+      </div>
+      <div>
+        <span>Confidence</span>
+        <strong>{{ stats.confidenceMean.toFixed(2) }}</strong>
+      </div>
+      <div>
+        <span>Background</span>
+        <strong>{{ status }}</strong>
+      </div>
+    </section>
+
     <div v-for="control in controls" :key="control.key" class="field">
       <label :for="control.key">
         <span>{{ control.label }}</span>

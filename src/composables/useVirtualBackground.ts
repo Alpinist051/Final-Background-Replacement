@@ -44,7 +44,10 @@ export function useVirtualBackground() {
       motion: 0,
       droppedFrames: 0,
       processingWidth: 0,
-      processingHeight: 0
+      processingHeight: 0,
+      foregroundRatio: 0,
+      maskMean: 0,
+      confidenceMean: 0
     },
     tuning: { ...defaultTuning },
     background: defaultBackground

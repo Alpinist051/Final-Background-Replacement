@@ -408,8 +408,10 @@ export class WebGLRenderer {
     context.clearRect(0, 0, frame.width, frame.height);
     tempContext.clearRect(0, 0, frame.width, frame.height);
 
-    if (this.background.mode === 'solid') {
-      context.fillStyle = this.background.color;
+    const background = this.background;
+
+    if (background.mode === 'solid') {
+      context.fillStyle = background.color;
       context.fillRect(0, 0, frame.width, frame.height);
     } else if (this.backgroundMode === 'image' || this.backgroundMode === 'video') {
       if (backgroundFrame) {

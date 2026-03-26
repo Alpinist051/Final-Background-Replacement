@@ -8,6 +8,9 @@ export interface PerformanceSample {
   droppedFrames: number;
   processingWidth: number;
   processingHeight: number;
+  foregroundRatio: number;
+  maskMean: number;
+  confidenceMean: number;
 }
 
 export function createRollingAverage(size = 30) {
@@ -35,6 +38,9 @@ export function createPerformanceTracker() {
   let droppedFrames = 0;
   let processingWidth = 1280;
   let processingHeight = 720;
+  let foregroundRatio = 0;
+  let maskMean = 0;
+  let confidenceMean = 0;
 
   return {
     record(sample: PerformanceSample) {
@@ -47,6 +53,9 @@ export function createPerformanceTracker() {
       droppedFrames += sample.droppedFrames;
       processingWidth = sample.processingWidth;
       processingHeight = sample.processingHeight;
+      foregroundRatio = sample.foregroundRatio;
+      maskMean = sample.maskMean;
+      confidenceMean = sample.confidenceMean;
     },
 
     snapshot(): PerformanceSample {
@@ -59,7 +68,10 @@ export function createPerformanceTracker() {
         motion: motionAvg.value(),
         droppedFrames,
         processingWidth,
-        processingHeight
+        processingHeight,
+        foregroundRatio,
+        maskMean,
+        confidenceMean
       };
     },
 

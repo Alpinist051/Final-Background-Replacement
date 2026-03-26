@@ -18,9 +18,46 @@ if (typeof importFallbackHost.import !== 'function') {
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
 
-function extractMask(mask: MPMask | undefined): Uint8Array | undefined {
+function extractCategoryMask(mask: MPMask | undefined): Uint8Array | undefined {
   if (!mask) return undefined;
-  return mask.hasUint8Array() ? mask.getAsUint8Array() : new Uint8Array(mask.getAsFloat32Array());
+  if (mask.hasUint8Array()) {
+    return mask.getAsUint8Array();
+  }
+
+  const source = mask.getAsFloat32Array();
+  const output = new Uint8Array(source.length);
+  for (let i = 0; i < source.length; i += 1) {
+    output[i] = Math.max(0, Math.min(255, Math.round(source[i])));
+  }
+  return output;
+}
+
+function extractMaskFloats(mask: MPMask): Float32Array {
+  return mask.hasFloat32Array()
+    ? mask.getAsFloat32Array()
+    : Float32Array.from(mask.getAsUint8Array(), (value) => value / 255);
+}
+
+function extractForegroundConfidenceMask(masks: MPMask[] | undefined): Float32Array | undefined {
+  if (!masks?.length) return undefined;
+
+  const floatMasks = masks.map(extractMaskFloats);
+  const primary = floatMasks[0];
+  const output = new Float32Array(primary.length);
+
+  for (let i = 0; i < primary.length; i += 1) {
+    let foregroundConfidence = 0;
+    if (floatMasks.length > 1) {
+      for (let maskIndex = 1; maskIndex < floatMasks.length; maskIndex += 1) {
+        foregroundConfidence = Math.max(foregroundConfidence, floatMasks[maskIndex][i] ?? 0);
+      }
+    } else {
+      foregroundConfidence = 1 - primary[i];
+    }
+    output[i] = Math.max(0, Math.min(1, foregroundConfidence));
+  }
+
+  return output;
 }
 
 export class SegmentationManager {
@@ -65,8 +102,8 @@ export class SegmentationManager {
 
     const result = this.segmenter!.segmentForVideo(frame, timestampMs);
 
-    const categoryMask = extractMask(result.categoryMask);
-    const confidenceMaskRaw = result.confidenceMasks?.[0] ? extractMask(result.confidenceMasks[0]) : undefined;
+    const categoryMask = extractCategoryMask(result.categoryMask);
+    const confidenceMaskRaw = extractForegroundConfidenceMask(result.confidenceMasks);
 
     if (!categoryMask || !(categoryMask instanceof Uint8Array)) {
       throw new Error('MediaPipe failed to return category mask');
@@ -76,9 +113,7 @@ export class SegmentationManager {
       width: frame.width,   // force exact input resolution (super-perfect alignment)
       height: frame.height,
       categoryMask,
-      confidenceMask: confidenceMaskRaw instanceof Float32Array
-        ? confidenceMaskRaw
-        : confidenceMaskRaw ? new Float32Array(confidenceMaskRaw) : undefined,
+      confidenceMask: confidenceMaskRaw instanceof Float32Array ? confidenceMaskRaw : undefined,
       labels: this.labels
     };
 
