@@ -46,8 +46,20 @@ let maskProcessor: MaskProcessor | null = null;
 let analysisCanvas: ReturnType<typeof createAnalysisCanvas> | null = null;
 let processingCanvas: OffscreenCanvas | null = null;
 let processingContext: OffscreenCanvasRenderingContext2D | null = null;
+type QualityTier = {
+  maxWidth: number;
+  maxHeight: number;
+  temporalAlpha: number;
+};
+
+const QUALITY_TIERS: QualityTier[] = [
+  { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.8 },
+  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.86 },
+  { maxWidth: 320, maxHeight: 240, temporalAlpha: 0.9 }
+];
+
 let currentTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.82,
+  temporalAlpha: 0.8,
   bilateralSigmaSpatial: 4,
   bilateralSigmaColor: 0.1,
   feather: 0.08,
@@ -61,18 +73,53 @@ const performanceTracker = createPerformanceTracker();
 let previousLuma: Float32Array | null = null;
 let pendingFrame: ImageBitmap | null = null;
 let pendingBackgroundFrame: ImageBitmap | null = null;
-let processingWidth = 1280;
-let processingHeight = 720;
-let degraded = false;
+let sourceWidth = 1280;
+let sourceHeight = 720;
+let processingWidth = 512;
+let processingHeight = 384;
+let qualityTierIndex = 0;
 let lowFpsStreak = 0;
+let highFpsStreak = 0;
 let tickHandle: number | null = null;
 let lastMaskWarningAt = 0;
 const TARGET_FPS = 30;
 const LOW_FPS_THRESHOLD = 25;
-const LOW_FPS_FRAMES_BEFORE_DROP = 5;
+const LOW_FPS_FRAMES_BEFORE_DROP = 4;
+const HIGH_FPS_FRAMES_BEFORE_RAISE = 45;
 
 function closeBitmap(bitmap: ImageBitmap | null) {
   bitmap?.close();
+}
+
+function fitWithinBounds(width: number, height: number, maxWidth: number, maxHeight: number) {
+  const scale = Math.min(maxWidth / width, maxHeight / height, 1);
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale))
+  };
+}
+
+function updateProcessingResolution(tierIndex: number, announce = false) {
+  qualityTierIndex = Math.max(0, Math.min(QUALITY_TIERS.length - 1, tierIndex));
+  const tier = QUALITY_TIERS[qualityTierIndex];
+  const fit = fitWithinBounds(sourceWidth, sourceHeight, tier.maxWidth, tier.maxHeight);
+  processingWidth = fit.width;
+  processingHeight = fit.height;
+  currentTuning = {
+    ...currentTuning,
+    temporalAlpha: tier.temporalAlpha
+  };
+  renderer?.resize(processingWidth, processingHeight);
+  if (announce) {
+    postMessage({
+      type: 'quality',
+      quality: {
+        width: processingWidth,
+        height: processingHeight,
+        temporalAlpha: currentTuning.temporalAlpha
+      }
+    });
+  }
 }
 
 function scheduleTick() {
@@ -168,44 +215,40 @@ function boostTuning(brightness: number, motion: number) {
   return boosted;
 }
 
-function applyQualityFallback(fps: number) {
-  if (fps < LOW_FPS_THRESHOLD) {
+function applyQualityFallback(fps: number, segmentationMs: number) {
+  if (fps < LOW_FPS_THRESHOLD || segmentationMs > 70) {
     lowFpsStreak += 1;
+    highFpsStreak = 0;
+  } else if (fps > 33 && segmentationMs < 45) {
+    highFpsStreak += 1;
+    lowFpsStreak = 0;
   } else {
     lowFpsStreak = 0;
+    highFpsStreak = 0;
   }
 
-  if (!degraded && lowFpsStreak >= LOW_FPS_FRAMES_BEFORE_DROP) {
-    degraded = true;
-    processingWidth = 640;
-    processingHeight = 480;
-    currentTuning = {
-      ...currentTuning,
-      temporalAlpha: 0.9
-    };
-    renderer?.resize(processingWidth, processingHeight);
-    postMessage({
-      type: 'quality',
-      quality: {
-        width: processingWidth,
-        height: processingHeight,
-        temporalAlpha: currentTuning.temporalAlpha
-      }
-    });
+  if (lowFpsStreak >= LOW_FPS_FRAMES_BEFORE_DROP && qualityTierIndex < QUALITY_TIERS.length - 1) {
+    updateProcessingResolution(qualityTierIndex + 1, true);
+    lowFpsStreak = 0;
+    highFpsStreak = 0;
+  } else if (highFpsStreak >= HIGH_FPS_FRAMES_BEFORE_RAISE && qualityTierIndex > 0) {
+    updateProcessingResolution(qualityTierIndex - 1, true);
+    lowFpsStreak = 0;
+    highFpsStreak = 0;
   }
 }
 
 async function handleInit(message: InitMessage) {
   renderer = new WebGLRenderer(message.canvas);
-  processingWidth = message.width;
-  processingHeight = message.height;
-  renderer.resize(processingWidth, processingHeight);
+  sourceWidth = message.width;
+  sourceHeight = message.height;
   renderer.setBackground(message.background);
   segmenter = new SegmentationManager();
   await segmenter.initialize();
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
   currentBackground = message.background;
+  updateProcessingResolution(0, false);
   scheduleTick();
   postMessage({ type: 'ready' });
 }
@@ -277,7 +320,7 @@ async function processTick() {
     confidenceMean: processedMask.confidenceMean
   });
 
-  applyQualityFallback(fps);
+  applyQualityFallback(fps, segmentationMs);
 
   postMessage({
     type: 'stats',
@@ -317,11 +360,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     return;
   }
   if (message.type === 'resize') {
-    processingWidth = message.width;
-    processingHeight = message.height;
-    if (!degraded) {
-      renderer?.resize(processingWidth, processingHeight);
-    }
+    sourceWidth = message.width;
+    sourceHeight = message.height;
+    updateProcessingResolution(qualityTierIndex, false);
     return;
   }
   if (message.type === 'stop') {
@@ -344,8 +385,13 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     segmenter = null;
     maskProcessor = null;
     previousLuma = null;
-    degraded = false;
+    sourceWidth = 1280;
+    sourceHeight = 720;
+    processingWidth = 512;
+    processingHeight = 384;
+    qualityTierIndex = 0;
     lowFpsStreak = 0;
+    highFpsStreak = 0;
     lastMaskWarningAt = 0;
   }
 };

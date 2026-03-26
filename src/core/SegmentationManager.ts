@@ -60,25 +60,42 @@ function extractForegroundConfidenceMask(masks: MPMask[] | undefined): Float32Ar
   return output;
 }
 
-function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined): Uint8Array | undefined {
+function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, labels: string[]): Uint8Array | undefined {
   if (!masks?.length) return undefined;
 
   const floatMasks = masks.map(extractMaskFloats);
   const length = floatMasks[0]?.length ?? 0;
   if (!length) return undefined;
 
+  const classWeights = new Float32Array(Math.max(1, labels.length));
+  for (let i = 0; i < classWeights.length; i += 1) {
+    const label = labels[i]?.toLowerCase?.() ?? '';
+    if (/background/i.test(label)) {
+      classWeights[i] = 1;
+    } else if (/hair/i.test(label)) {
+      classWeights[i] = 1.1;
+    } else if (/(face|body|person|skin|neck|torso|cloth|clothes|shirt|jacket|sleeve|upper)/i.test(label)) {
+      classWeights[i] = 1.05;
+    } else if (/(others|other|accessory|glasses|headset|object)/i.test(label)) {
+      classWeights[i] = 0.96;
+    } else {
+      classWeights[i] = 1.0;
+    }
+  }
+
   const output = new Uint8Array(length);
   for (let i = 0; i < length; i += 1) {
+    const backgroundValue = floatMasks[0][i] ?? 0;
     let bestIndex = 0;
-    let bestValue = floatMasks[0][i] ?? 0;
+    let bestValue = backgroundValue * classWeights[0];
     for (let maskIndex = 1; maskIndex < floatMasks.length; maskIndex += 1) {
-      const candidate = floatMasks[maskIndex][i] ?? 0;
+      const candidate = (floatMasks[maskIndex][i] ?? 0) * (classWeights[maskIndex] ?? 1);
       if (candidate > bestValue) {
         bestValue = candidate;
         bestIndex = maskIndex;
       }
     }
-    output[i] = bestIndex;
+    output[i] = bestIndex !== 0 && bestValue >= 0.16 && bestValue >= backgroundValue * 0.82 ? bestIndex : 0;
   }
 
   return output;
@@ -135,10 +152,12 @@ export class SegmentationManager {
     const result = this.segmenter!.segmentForVideo(frame, timestampMs);
 
     let categoryMask = extractCategoryMask(result.categoryMask);
-    if (categoryMask && foregroundRatio(categoryMask) < 0.001) {
-      const derived = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks);
-      if (derived) {
-        categoryMask = derived;
+    const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, this.labels);
+    if (derivedMask) {
+      const categoryCoverage = categoryMask ? foregroundRatio(categoryMask) : 0;
+      const derivedCoverage = foregroundRatio(derivedMask);
+      if (!categoryMask || categoryCoverage < 0.01 || derivedCoverage > categoryCoverage * 1.15) {
+        categoryMask = derivedMask;
       }
     }
     const confidenceMaskRaw = extractForegroundConfidenceMask(result.confidenceMasks);

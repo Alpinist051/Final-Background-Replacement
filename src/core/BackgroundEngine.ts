@@ -60,7 +60,7 @@ export class BackgroundEngine {
   private processedStream: MediaStream | null = null;
 
   private tuning: VirtualBackgroundTuning = {
-    temporalAlpha: 0.82,
+    temporalAlpha: 0.8,
     bilateralSigmaSpatial: 4,
     bilateralSigmaColor: 0.1,
     feather: 0.08,
