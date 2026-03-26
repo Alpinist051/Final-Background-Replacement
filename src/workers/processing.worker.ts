@@ -172,21 +172,18 @@ function computeLuma(bitmap: ImageBitmap) {
   return { brightness, motion };
 }
 
-// UPDATED BOOST FUNCTION
 function boostTuning(brightness: number, motion: number, processedMask: ProcessedMask) {
   const boosted = { ...currentTuning };
 
   if (motion > 0.25 || processedMask.motionMagnitude > 0.18) {
     boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.65) * boosted.motionBoost;
-    boosted.temporalAlpha = Math.max(0.55, boosted.temporalAlpha - 0.22); // instant response
   }
   if (brightness < 80) {
     boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.35);
   }
   boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
   boosted.temporalAlpha = Math.min(0.92, Math.max(0.55, boosted.temporalAlpha));
-  const motionFactor = Math.min(1, Math.max(0, (motion * 2.5 + processedMask.motionMagnitude * 4.5) * currentTuning.motionBoost));
-  boosted.motionBoost = motionFactor;
+  boosted.motionBoost = currentTuning.motionBoost;
   return boosted;
 }
 
