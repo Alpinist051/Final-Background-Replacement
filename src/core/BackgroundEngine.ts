@@ -153,7 +153,7 @@ export class BackgroundEngine {
 
   private ensureWorker() {
     if (this.worker) return;
-    this.worker = new Worker(new URL('../workers/processing.worker.ts', import.meta.url), { type: 'module' });
+    this.worker = new Worker(new URL('../workers/processing.worker.ts', import.meta.url));
 
     this.worker.onmessage = (event: MessageEvent<WorkerEnvelope>) => {
       const msg = event.data;
