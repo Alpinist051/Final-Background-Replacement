@@ -18,7 +18,7 @@ function createFloatBuffer(length: number, fill = 0) {
 function isBackgroundLabel(label: string) { return /background/i.test(label); }
 function isHairLabel(label: string) { return /hair/i.test(label); }
 function isClothesOrSoftLabel(label: string) {
-  return /(cloth|clothes|shirt|jacket|sleeve|upper|others|other|accessory|object|headset|cup|paper)/i.test(label);
+  return /(cloth|clothes|shirt|jacket|sleeve|upper|torso|body|person|arm|hand|leg|foot|pants|trouser|dress|skirt|shoe|others|other|accessory|object|headset|cup|paper)/i.test(label);
 }
 
 function isStrongLabel(label: string) {
@@ -44,6 +44,7 @@ function buildClassWeights(labels: string[]) {
 
 export class MaskProcessor {
   private previousCategoryMask: Uint8Array | null = null;
+  private previousAlphaMask: Float32Array | null = null;
   private classWeightsKey = '';
   private classWeights: Float32Array = new Float32Array([0, 1]);
 
@@ -63,7 +64,6 @@ export class MaskProcessor {
 
     const alphaMask = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount, 1.0);
-    const baseAlphaMask = createFloatBuffer(pixelCount);
     let foregroundPixels = 0;
     let alphaSum = 0;
     let confidenceSum = 0;
@@ -74,58 +74,52 @@ export class MaskProcessor {
       const classWeight = classWeights[cat] ?? (cat === 0 ? 0 : 0.98);
 
       if (cat === 0) {
-        baseAlphaMask[i] = 0;
+        alphaMask[i] = 0;
       } else {
-        let alpha = confidence * classWeight * Math.min(1.35, Math.max(0.9, tuning.confidenceBoost));
+        let alpha = confidence * classWeight * Math.min(1.5, Math.max(0.95, tuning.confidenceBoost));
 
         if (isClothesOrSoftLabel(labels[cat] ?? '')) {
-          alpha = Math.max(alpha, 0.9);
+          alpha = Math.max(alpha, 0.96);
         } else if (isHairLabel(labels[cat] ?? '')) {
-          alpha = Math.max(alpha, 0.92);
+          alpha = Math.max(alpha, 0.97);
         }
 
-        baseAlphaMask[i] = Math.min(1, alpha);
+        alphaMask[i] = Math.min(1, alpha);
       }
 
       confidenceMask[i] = confidence;
-      alphaSum += baseAlphaMask[i];
+      alphaSum += alphaMask[i];
       confidenceSum += confidence;
     }
 
-    const expansionThreshold = 0.46;
+    const previousAlphaMask = this.previousAlphaMask;
+    const nextAlphaMask = createFloatBuffer(pixelCount);
+
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const index = y * width + x;
-        const currentAlpha = baseAlphaMask[index];
+        const currentAlpha = alphaMask[index];
+        const currentLabel = labels[categoryMask[index]] ?? '';
+        const previousAlpha = previousAlphaMask?.[index] ?? 0;
+
         let alpha = currentAlpha;
-        if (alpha < expansionThreshold) {
-          let strongestNeighbor = 0;
-          let strongestNeighborClass = 0;
-
-          const sampleNeighbor = (nx: number, ny: number) => {
-            const neighborIndex = ny * width + nx;
-            const neighborAlpha = baseAlphaMask[neighborIndex];
-            if (neighborAlpha > strongestNeighbor) {
-              strongestNeighbor = neighborAlpha;
-              strongestNeighborClass = categoryMask[neighborIndex];
-            }
-          };
-
-          if (x > 0) sampleNeighbor(x - 1, y);
-          if (x + 1 < width) sampleNeighbor(x + 1, y);
-          if (y > 0) sampleNeighbor(x, y - 1);
-          if (y + 1 < height) sampleNeighbor(x, y + 1);
-
-          if (strongestNeighbor > expansionThreshold) {
-            const neighborLabel = labels[strongestNeighborClass] ?? '';
-            const neighborBoost = isStrongLabel(neighborLabel) ? 0.88 : 0.76;
-            alpha = Math.max(alpha, strongestNeighbor * neighborBoost);
+        if (previousAlpha > 0) {
+          const preserve = isHairLabel(currentLabel) ? 0.86 : isClothesOrSoftLabel(currentLabel) ? 0.8 : 0.72;
+          if (currentAlpha < previousAlpha) {
+            alpha = Math.max(currentAlpha, previousAlpha * preserve);
           }
         }
-        alphaMask[index] = alpha;
+
+        if (alpha > 0.06 && currentAlpha === 0 && previousAlpha > 0.08) {
+          alpha = previousAlpha * 0.5;
+        }
+
+        nextAlphaMask[index] = Math.min(1, alpha);
         if (alpha > 0.12) foregroundPixels += 1;
       }
     }
+
+    alphaMask.set(nextAlphaMask);
 
     let motionMagnitude = 0;
     if (this.previousCategoryMask) {
@@ -137,6 +131,7 @@ export class MaskProcessor {
     }
 
     this.previousCategoryMask = new Uint8Array(categoryMask);
+    this.previousAlphaMask = new Float32Array(alphaMask);
 
     return {
       alphaMask,
@@ -150,6 +145,7 @@ export class MaskProcessor {
 
   reset() {
     this.previousCategoryMask = null;
+    this.previousAlphaMask = null;
     this.classWeightsKey = '';
     this.classWeights = new Float32Array([0, 1]);
   }

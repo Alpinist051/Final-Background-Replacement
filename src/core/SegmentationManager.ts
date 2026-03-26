@@ -153,12 +153,8 @@ export class SegmentationManager {
 
     let categoryMask = extractCategoryMask(result.categoryMask);
     const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, this.labels);
-    if (derivedMask) {
-      const categoryCoverage = categoryMask ? foregroundRatio(categoryMask) : 0;
-      const derivedCoverage = foregroundRatio(derivedMask);
-      if (!categoryMask || categoryCoverage < 0.01 || derivedCoverage > categoryCoverage * 1.15) {
-        categoryMask = derivedMask;
-      }
+    if (derivedMask && (!categoryMask || foregroundRatio(categoryMask) < 0.01)) {
+      categoryMask = derivedMask;
     }
     const confidenceMaskRaw = extractForegroundConfidenceMask(result.confidenceMasks);
 

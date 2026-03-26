@@ -54,13 +54,13 @@ type QualityTier = {
 };
 
 const QUALITY_TIERS: QualityTier[] = [
-  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.78 },
-  { maxWidth: 320, maxHeight: 240, temporalAlpha: 0.84 },
-  { maxWidth: 256, maxHeight: 192, temporalAlpha: 0.9 }
+  { maxWidth: 640, maxHeight: 480, temporalAlpha: 0.76 },
+  { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.82 },
+  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.9 }
 ];
 
 let currentTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.78,
+  temporalAlpha: 0.76,
   bilateralSigmaSpatial: 4,
   bilateralSigmaColor: 0.1,
   feather: 0.08,
@@ -76,8 +76,8 @@ let pendingFrame: ImageBitmap | null = null;
 let pendingBackgroundFrame: ImageBitmap | null = null;
 let sourceWidth = 1280;
 let sourceHeight = 720;
-let processingWidth = 512;
-let processingHeight = 384;
+let processingWidth = 640;
+let processingHeight = 480;
 let qualityTierIndex = 0;
 let lowFpsStreak = 0;
 let highFpsStreak = 0;
