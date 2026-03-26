@@ -48,6 +48,7 @@ export class BackgroundEngine {
   private worker: Worker | null = null;
   private cameraStream: MediaStream | null = null;
   private backgroundVideo: HTMLVideoElement | null = null;
+  private backgroundVideoTransferWarningShown = false;
   private offscreenCanvas: OffscreenCanvas | null = null;
   private canvasTransferred = false;
   private running = false;
@@ -147,6 +148,7 @@ export class BackgroundEngine {
       this.backgroundVideo?.pause();
       this.backgroundVideo = null;
       const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
       video.src = this.background.url;
       video.loop = this.background.loop ?? true;
       video.autoplay = true;
@@ -154,6 +156,7 @@ export class BackgroundEngine {
       video.playsInline = true;
       await video.play().catch(() => { });
       this.backgroundVideo = video;
+      this.backgroundVideoTransferWarningShown = false;
     }
 
     this.worker.postMessage({ type: 'background', background: cloneBackgroundSource(this.background) });
@@ -235,7 +238,14 @@ export class BackgroundEngine {
     let backgroundFrame: ImageBitmap | null = null;
 
     if (this.background.mode === 'video' && this.backgroundVideo?.readyState >= 2) {
-      backgroundFrame = await createImageBitmap(this.backgroundVideo);
+      try {
+        backgroundFrame = await createImageBitmap(this.backgroundVideo);
+      } catch (error) {
+        if (!this.backgroundVideoTransferWarningShown) {
+          this.backgroundVideoTransferWarningShown = true;
+          console.warn('Video background is not origin-clean, so it cannot be transferred to the worker. Use a CORS-enabled video source or a local file for animated backgrounds.', error);
+        }
+      }
     }
 
     this.worker.postMessage(
