@@ -95,7 +95,7 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
         bestIndex = maskIndex;
       }
     }
-    output[i] = bestIndex !== 0 && bestValue >= 0.16 && bestValue >= backgroundValue * 0.82 ? bestIndex : 0;
+    output[i] = bestIndex !== 0 && bestValue >= 0.12 && bestValue >= backgroundValue * 0.74 ? bestIndex : 0;
   }
 
   return output;
