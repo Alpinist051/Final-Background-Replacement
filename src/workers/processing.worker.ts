@@ -46,6 +46,7 @@ let maskProcessor: MaskProcessor | null = null;
 let analysisCanvas: ReturnType<typeof createAnalysisCanvas> | null = null;
 let processingCanvas: OffscreenCanvas | null = null;
 let processingContext: OffscreenCanvasRenderingContext2D | null = null;
+
 type QualityTier = {
   maxWidth: number;
   maxHeight: number;
@@ -105,62 +106,37 @@ function updateProcessingResolution(tierIndex: number, announce = false) {
   const fit = fitWithinBounds(sourceWidth, sourceHeight, tier.maxWidth, tier.maxHeight);
   processingWidth = fit.width;
   processingHeight = fit.height;
-  currentTuning = {
-    ...currentTuning,
-    temporalAlpha: tier.temporalAlpha
-  };
+  currentTuning = { ...currentTuning, temporalAlpha: tier.temporalAlpha };
   renderer?.resize(processingWidth, processingHeight);
   if (announce) {
     postMessage({
       type: 'quality',
-      quality: {
-        width: processingWidth,
-        height: processingHeight,
-        temporalAlpha: currentTuning.temporalAlpha
-      }
+      quality: { width: processingWidth, height: processingHeight, temporalAlpha: currentTuning.temporalAlpha }
     });
   }
 }
 
 function scheduleTick() {
   if (tickHandle !== null) return;
-
-  const tick = () => {
-    tickHandle = null;
-    void processTick();
-  };
-
+  const tick = () => { tickHandle = null; void processTick(); };
   if (typeof self.requestAnimationFrame === 'function') {
     tickHandle = self.requestAnimationFrame(tick);
-    return;
+  } else {
+    tickHandle = self.setTimeout(tick, 1000 / TARGET_FPS);
   }
-
-  tickHandle = self.setTimeout(tick, 1000 / TARGET_FPS);
 }
 
 function ensureProcessingCanvas() {
-  if (!processingCanvas) {
+  if (!processingCanvas || processingCanvas.width !== processingWidth || processingCanvas.height !== processingHeight) {
     processingCanvas = new OffscreenCanvas(processingWidth, processingHeight);
-    processingContext = processingCanvas.getContext('2d', { willReadFrequently: true });
-    return;
-  }
-
-  if (processingCanvas.width !== processingWidth || processingCanvas.height !== processingHeight) {
-    processingCanvas.width = processingWidth;
-    processingCanvas.height = processingHeight;
     processingContext = processingCanvas.getContext('2d', { willReadFrequently: true });
   }
 }
 
 async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
-  if (!processingCanvas || !processingContext) {
-    return bitmap;
-  }
-
+  if (!processingCanvas || !processingContext) return bitmap;
   processingContext.clearRect(0, 0, processingCanvas.width, processingCanvas.height);
-  // Rotate 180 degrees so upside-down camera sensors render upright in both
-  // segmentation and the final composite.
   processingContext.setTransform(-1, 0, 0, -1, processingCanvas.width, processingCanvas.height);
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
   processingContext.setTransform(1, 0, 0, 1, 0, 0);
@@ -170,71 +146,63 @@ async function drawForProcessing(bitmap: ImageBitmap) {
 function computeLuma(bitmap: ImageBitmap) {
   analysisCanvas ??= createAnalysisCanvas(32, 18);
   const { canvas, context } = analysisCanvas;
-  if (!context) {
-    return { brightness: 0, motion: 0 };
-  }
+  if (!context) return { brightness: 0, motion: 0 };
 
-  canvas.width = 32;
-  canvas.height = 18;
+  canvas.width = 32; canvas.height = 18;
   context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
   const current = new Float32Array(canvas.width * canvas.height);
   let brightness = 0;
 
-  for (let i = 0; i < current.length; i += 1) {
+  for (let i = 0; i < current.length; i++) {
     const index = i * 4;
     const value = (data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114) / 255;
     current[i] = value;
     brightness += value;
   }
-
   brightness = (brightness / current.length) * 255;
 
   let motion = 0;
   if (previousLuma && previousLuma.length === current.length) {
     let delta = 0;
-    for (let i = 0; i < current.length; i += 1) {
-      delta += Math.abs(current[i] - previousLuma[i]);
-    }
+    for (let i = 0; i < current.length; i++) delta += Math.abs(current[i] - previousLuma[i]);
     motion = delta / current.length;
   }
   previousLuma = current;
   return { brightness, motion };
 }
 
-function boostTuning(brightness: number, motion: number) {
+// UPDATED BOOST FUNCTION
+function boostTuning(brightness: number, motion: number, processedMask: ProcessedMask) {
   const boosted = { ...currentTuning };
-  if (motion > 0.3) {
-    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.5) * boosted.motionBoost;
+
+  if (motion > 0.25 || processedMask.motionMagnitude > 0.18) {
+    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.65) * boosted.motionBoost;
+    boosted.temporalAlpha = Math.max(0.55, boosted.temporalAlpha - 0.22); // instant response
   }
   if (brightness < 80) {
-    boosted.confidenceBoost *= boosted.brightnessBoost * 1.3;
+    boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.35);
   }
-  boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost);
-  boosted.temporalAlpha = Math.min(0.9, Math.max(0.75, boosted.temporalAlpha));
+  boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
+  boosted.temporalAlpha = Math.min(0.92, Math.max(0.55, boosted.temporalAlpha));
   return boosted;
 }
 
 function applyQualityFallback(fps: number, segmentationMs: number) {
   if (fps < LOW_FPS_THRESHOLD || segmentationMs > 70) {
-    lowFpsStreak += 1;
-    highFpsStreak = 0;
+    lowFpsStreak += 1; highFpsStreak = 0;
   } else if (fps > 33 && segmentationMs < 45) {
-    highFpsStreak += 1;
-    lowFpsStreak = 0;
+    highFpsStreak += 1; lowFpsStreak = 0;
   } else {
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
+    lowFpsStreak = 0; highFpsStreak = 0;
   }
 
   if (lowFpsStreak >= LOW_FPS_FRAMES_BEFORE_DROP && qualityTierIndex < QUALITY_TIERS.length - 1) {
     updateProcessingResolution(qualityTierIndex + 1, true);
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
+    lowFpsStreak = 0; highFpsStreak = 0;
   } else if (highFpsStreak >= HIGH_FPS_FRAMES_BEFORE_RAISE && qualityTierIndex > 0) {
     updateProcessingResolution(qualityTierIndex - 1, true);
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
+    lowFpsStreak = 0; highFpsStreak = 0;
   }
 }
 
@@ -275,20 +243,19 @@ async function processTick() {
 
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
-  const tuning = boostTuning(brightness, motion);
-
-  const segmentationStart = performance.now();
   const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
-  const processedMask = maskProcessor.process(segmentation, tuning);
+  const processedMask = maskProcessor.process(segmentation, currentTuning);
+
+  // ← UPDATED: pass processedMask
+  const tuning = boostTuning(brightness, motion, processedMask);
+
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
   const renderStart = performance.now();
 
   if ((processedMask.foregroundRatio < 0.01 || processedMask.foregroundRatio > 0.99) && performance.now() - lastMaskWarningAt > 3000) {
     lastMaskWarningAt = performance.now();
-    console.warn(
-      `Foreground mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage, mean ${processedMask.maskMean.toFixed(2)}).`
-    );
+    console.warn(`Foreground mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage)`);
   }
 
   const renderArgs: RenderFrameArgs = {
@@ -314,22 +281,14 @@ async function processTick() {
     motion: combinedMotion,
     droppedFrames: 0,
     processingWidth,
-    processingHeight,
-    foregroundRatio: processedMask.foregroundRatio,
-    maskMean: processedMask.maskMean,
-    confidenceMean: processedMask.confidenceMean
+    processingHeight
   });
 
   applyQualityFallback(fps, segmentationMs);
 
-  postMessage({
-    type: 'stats',
-    stats: performanceTracker.snapshot() satisfies EngineStats
-  });
+  postMessage({ type: 'stats', stats: performanceTracker.snapshot() satisfies EngineStats });
 
-  if (processedBitmap !== sourceFrame) {
-    processedBitmap.close();
-  }
+  if (processedBitmap !== sourceFrame) processedBitmap.close();
   sourceFrame.close();
   sourceBackgroundFrame?.close?.();
   postMessage({ type: 'frameProcessed' });
@@ -338,18 +297,9 @@ async function processTick() {
 
 self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   const message = event.data;
-  if (message.type === 'init') {
-    await handleInit(message);
-    return;
-  }
-  if (message.type === 'frame') {
-    await handleFrame(message);
-    return;
-  }
-  if (message.type === 'tuning') {
-    currentTuning = message.tuning;
-    return;
-  }
+  if (message.type === 'init') { await handleInit(message); return; }
+  if (message.type === 'frame') { await handleFrame(message); return; }
+  if (message.type === 'tuning') { currentTuning = message.tuning; return; }
   if (message.type === 'background') {
     currentBackground = message.background;
     renderer?.setBackground(message.background);
@@ -367,11 +317,8 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   }
   if (message.type === 'stop') {
     if (tickHandle !== null) {
-      if (typeof self.cancelAnimationFrame === 'function') {
-        self.cancelAnimationFrame(tickHandle);
-      } else {
-        self.clearTimeout(tickHandle);
-      }
+      if (typeof self.cancelAnimationFrame === 'function') self.cancelAnimationFrame(tickHandle);
+      else self.clearTimeout(tickHandle);
       tickHandle = null;
     }
     closeBitmap(pendingFrame);
@@ -381,17 +328,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     segmenter?.close();
     maskProcessor?.reset();
     renderer?.destroy();
-    renderer = null;
-    segmenter = null;
-    maskProcessor = null;
+    renderer = null; segmenter = null; maskProcessor = null;
     previousLuma = null;
-    sourceWidth = 1280;
-    sourceHeight = 720;
-    processingWidth = 512;
-    processingHeight = 384;
-    qualityTierIndex = 0;
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
-    lastMaskWarningAt = 0;
   }
 };

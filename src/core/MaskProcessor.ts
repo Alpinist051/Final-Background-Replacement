@@ -15,36 +15,24 @@ function createFloatBuffer(length: number, fill = 0) {
   return buffer;
 }
 
-function isBackgroundLabel(label: string) {
-  return /background/i.test(label);
-}
-
-function isHairLabel(label: string) {
-  return /hair/i.test(label);
-}
-
-function isStrongForegroundLabel(label: string) {
-  return /(face|body|person|skin|neck|torso|cloth|clothes|shirt|jacket|sleeve|upper)/i.test(label);
-}
-
-function isSoftForegroundLabel(label: string) {
-  return /(others|other|accessory|glasses|headset|object)/i.test(label);
+function isBackgroundLabel(label: string) { return /background/i.test(label); }
+function isHairLabel(label: string) { return /hair/i.test(label); }
+function isClothesOrSoftLabel(label: string) {
+  return /(cloth|clothes|shirt|jacket|sleeve|upper|others|other|accessory|object|headset|cup|paper)/i.test(label);
 }
 
 function buildClassWeights(labels: string[]) {
   const weights = new Float32Array(Math.max(1, labels.length));
-  for (let i = 0; i < weights.length; i += 1) {
-    const label = labels[i]?.toLowerCase?.() ?? '';
+  for (let i = 0; i < weights.length; i++) {
+    const label = labels[i]?.toLowerCase() ?? '';
     if (isBackgroundLabel(label)) {
       weights[i] = 0;
     } else if (isHairLabel(label)) {
-      weights[i] = 1.05;
-    } else if (isStrongForegroundLabel(label)) {
-      weights[i] = 1.0;
-    } else if (isSoftForegroundLabel(label)) {
-      weights[i] = 0.92;
+      weights[i] = 1.08;
+    } else if (isClothesOrSoftLabel(label)) {
+      weights[i] = 1.02;
     } else {
-      weights[i] = 0.95;
+      weights[i] = 1.0;
     }
   }
   return weights;
@@ -75,19 +63,22 @@ export class MaskProcessor {
     let alphaSum = 0;
     let confidenceSum = 0;
 
-    for (let i = 0; i < pixelCount; i += 1) {
+    for (let i = 0; i < pixelCount; i++) {
       const cat = categoryMask[i];
       const confidence = rawConfidence ? Math.max(0, Math.min(1, rawConfidence[i])) : 1;
-      const classWeight = classWeights[cat] ?? (cat === 0 ? 0 : 0.95);
+      const classWeight = classWeights[cat] ?? (cat === 0 ? 0 : 0.98);
 
       if (cat === 0) {
         alphaMask[i] = 0;
       } else {
-        const weightedAlpha = confidence * classWeight * Math.min(1.25, Math.max(0.85, tuning.confidenceBoost));
-        const label = labels[cat] ?? '';
-        const hardenedAlpha = isHairLabel(label) ? Math.max(weightedAlpha, 0.94) : Math.max(weightedAlpha, 0.88);
-        alphaMask[i] = Math.min(1, hardenedAlpha);
-        foregroundPixels += 1;
+        let alpha = confidence * classWeight * Math.min(1.35, Math.max(0.9, tuning.confidenceBoost));
+
+        if (isClothesOrSoftLabel(labels[cat] ?? '')) {
+          alpha = Math.max(alpha, 0.94);
+        }
+
+        alphaMask[i] = Math.min(1, alpha);
+        foregroundPixels++;
       }
 
       confidenceMask[i] = confidence;
@@ -98,8 +89,8 @@ export class MaskProcessor {
     let motionMagnitude = 0;
     if (this.previousCategoryMask) {
       let diff = 0;
-      for (let i = 0; i < pixelCount; i += 1) {
-        if (categoryMask[i] !== this.previousCategoryMask[i]) diff += 1;
+      for (let i = 0; i < pixelCount; i++) {
+        if (categoryMask[i] !== this.previousCategoryMask[i]) diff++;
       }
       motionMagnitude = diff / pixelCount;
     }
