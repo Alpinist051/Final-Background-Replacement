@@ -54,13 +54,13 @@ type QualityTier = {
 };
 
 const QUALITY_TIERS: QualityTier[] = [
-  { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.8 },
-  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.86 },
-  { maxWidth: 320, maxHeight: 240, temporalAlpha: 0.9 }
+  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.78 },
+  { maxWidth: 320, maxHeight: 240, temporalAlpha: 0.84 },
+  { maxWidth: 256, maxHeight: 192, temporalAlpha: 0.9 }
 ];
 
 let currentTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.8,
+  temporalAlpha: 0.78,
   bilateralSigmaSpatial: 4,
   bilateralSigmaColor: 0.1,
   feather: 0.08,
@@ -185,6 +185,8 @@ function boostTuning(brightness: number, motion: number, processedMask: Processe
   }
   boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
   boosted.temporalAlpha = Math.min(0.92, Math.max(0.55, boosted.temporalAlpha));
+  const motionFactor = Math.min(1, Math.max(0, (motion * 2.5 + processedMask.motionMagnitude * 4.5) * currentTuning.motionBoost));
+  boosted.motionBoost = motionFactor;
   return boosted;
 }
 

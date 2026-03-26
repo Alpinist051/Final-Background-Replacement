@@ -346,6 +346,7 @@ export class WebGLRenderer {
       this.setTexture(this.temporalProgram as WebGLProgram, 'u_confidence', this.confidenceTexture, 2);
       this.setFloat(this.temporalProgram as WebGLProgram, 'u_alpha', tuning.temporalAlpha);
       this.setFloat(this.temporalProgram as WebGLProgram, 'u_confidenceBoost', tuning.confidenceBoost);
+      this.setFloat(this.temporalProgram as WebGLProgram, 'u_motionBoost', tuning.motionBoost);
     });
   }
 
