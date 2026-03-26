@@ -28,6 +28,19 @@ function cloneBackgroundSource(background: BackgroundSource): BackgroundSource {
   }
 }
 
+function cloneTuning(tuning: VirtualBackgroundTuning): VirtualBackgroundTuning {
+  return {
+    temporalAlpha: tuning.temporalAlpha,
+    bilateralSigmaSpatial: tuning.bilateralSigmaSpatial,
+    bilateralSigmaColor: tuning.bilateralSigmaColor,
+    feather: tuning.feather,
+    lightWrap: tuning.lightWrap,
+    confidenceBoost: tuning.confidenceBoost,
+    motionBoost: tuning.motionBoost,
+    brightnessBoost: tuning.brightnessBoost
+  };
+}
+
 export class BackgroundEngine {
   private readonly videoElement: HTMLVideoElement;
   private readonly canvas: HTMLCanvasElement;
@@ -35,6 +48,8 @@ export class BackgroundEngine {
   private worker: Worker | null = null;
   private cameraStream: MediaStream | null = null;
   private backgroundVideo: HTMLVideoElement | null = null;
+  private offscreenCanvas: OffscreenCanvas | null = null;
+  private canvasTransferred = false;
   private running = false;
   private inFlight = false;
   private queuedFrame = false;
@@ -83,29 +98,39 @@ export class BackgroundEngine {
     this.videoElement.srcObject = stream;
     await this.videoElement.play();
 
-    this.resizeCanvas();
+    const width = this.videoElement.videoWidth || 1280;
+    const height = this.videoElement.videoHeight || 720;
 
     this.processedStream ??= this.canvas.captureStream(30);
 
-    const offscreen = this.canvas.transferControlToOffscreen();
-    this.worker!.postMessage({
-      type: 'init',
-      canvas: offscreen,
-      width: this.canvas.width,
-      height: this.canvas.height,
-      tuning: this.tuning,
-      background: cloneBackgroundSource(this.background)
-    }, [offscreen]);
+    if (!this.canvasTransferred) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      this.offscreenCanvas = this.canvas.transferControlToOffscreen();
+      this.worker!.postMessage({
+        type: 'init',
+        canvas: this.offscreenCanvas,
+        width,
+        height,
+        tuning: cloneTuning(this.tuning),
+        background: cloneBackgroundSource(this.background)
+      }, [this.offscreenCanvas]);
+      this.canvasTransferred = true;
+      this.initialized = true;
+    } else {
+      this.worker!.postMessage({ type: 'resize', width, height });
+      this.worker!.postMessage({ type: 'tuning', tuning: cloneTuning(this.tuning) });
+      this.worker!.postMessage({ type: 'background', background: cloneBackgroundSource(this.background) });
+    }
 
-    this.initialized = true;
     this.running = true;
     this.callbacks.onStatus?.('running');
     this.scheduleNextPump();
   }
 
   setTuning(tuning: VirtualBackgroundTuning) {
-    this.tuning = tuning;
-    this.worker?.postMessage({ type: 'tuning', tuning });
+    this.tuning = cloneTuning(tuning);
+    this.worker?.postMessage({ type: 'tuning', tuning: cloneTuning(this.tuning) });
   }
 
   async setBackground(background: BackgroundSource) {
@@ -160,6 +185,7 @@ export class BackgroundEngine {
   }
 
   private resizeCanvas() {
+    if (this.canvasTransferred) return;
     this.canvas.width = this.videoElement.videoWidth || 1280;
     this.canvas.height = this.videoElement.videoHeight || 720;
   }
