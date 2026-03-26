@@ -5,7 +5,17 @@ import {
 } from '@mediapipe/tasks-vision';
 import type { SegmentationFrameResult } from '@/types/engine';
 
-const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
+type ImportFallbackHost = typeof globalThis & {
+  import?: (specifier: string) => Promise<unknown>;
+};
+
+const importFallbackHost = globalThis as ImportFallbackHost;
+
+if (typeof importFallbackHost.import !== 'function') {
+  importFallbackHost.import = (specifier: string) => import(/* @vite-ignore */ specifier);
+}
+
+const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
 
 function extractMask(mask: MPMask | undefined): Uint8Array | undefined {
