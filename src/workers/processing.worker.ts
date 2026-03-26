@@ -2,7 +2,7 @@ import { createAnalysisCanvas } from '@/utils/canvasUtils';
 import { createPerformanceTracker } from '@/utils/performance';
 import type { BackgroundSource, EngineStats, VirtualBackgroundTuning } from '@/types/engine';
 import { SegmentationManager } from '@/core/SegmentationManager';
-import { MaskProcessor } from '@/core/MaskProcessor';
+import { MaskProcessor, type ProcessedMask } from '@/core/MaskProcessor';
 import { WebGLRenderer, type RenderFrameArgs } from '@/core/WebGLRenderer';
 
 type InitMessage = {
@@ -243,6 +243,7 @@ async function processTick() {
 
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
+  const segmentationStart = performance.now();
   const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
   const processedMask = maskProcessor.process(segmentation, currentTuning);
@@ -281,7 +282,10 @@ async function processTick() {
     motion: combinedMotion,
     droppedFrames: 0,
     processingWidth,
-    processingHeight
+    processingHeight,
+    foregroundRatio: processedMask.foregroundRatio,
+    maskMean: processedMask.maskMean,
+    confidenceMean: processedMask.confidenceMean
   });
 
   applyQualityFallback(fps, segmentationMs);
