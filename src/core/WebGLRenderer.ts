@@ -379,6 +379,7 @@ export class WebGLRenderer {
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
     this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
     this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
+    this.setVec2(this.compositeProgram, 'u_texelSize', 1 / this.width, 1 / this.height);
     this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
     this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
