@@ -60,6 +60,38 @@ function extractForegroundConfidenceMask(masks: MPMask[] | undefined): Float32Ar
   return output;
 }
 
+function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined): Uint8Array | undefined {
+  if (!masks?.length) return undefined;
+
+  const floatMasks = masks.map(extractMaskFloats);
+  const length = floatMasks[0]?.length ?? 0;
+  if (!length) return undefined;
+
+  const output = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) {
+    let bestIndex = 0;
+    let bestValue = floatMasks[0][i] ?? 0;
+    for (let maskIndex = 1; maskIndex < floatMasks.length; maskIndex += 1) {
+      const candidate = floatMasks[maskIndex][i] ?? 0;
+      if (candidate > bestValue) {
+        bestValue = candidate;
+        bestIndex = maskIndex;
+      }
+    }
+    output[i] = bestIndex;
+  }
+
+  return output;
+}
+
+function foregroundRatio(categoryMask: Uint8Array) {
+  let count = 0;
+  for (let i = 0; i < categoryMask.length; i += 1) {
+    if (categoryMask[i] !== 0) count += 1;
+  }
+  return count / Math.max(1, categoryMask.length);
+}
+
 export class SegmentationManager {
   private segmenter: ImageSegmenter | null = null;
   private labels: string[] = [];
@@ -102,11 +134,21 @@ export class SegmentationManager {
 
     const result = this.segmenter!.segmentForVideo(frame, timestampMs);
 
-    const categoryMask = extractCategoryMask(result.categoryMask);
+    let categoryMask = extractCategoryMask(result.categoryMask);
+    if (categoryMask && foregroundRatio(categoryMask) < 0.001) {
+      const derived = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks);
+      if (derived) {
+        categoryMask = derived;
+      }
+    }
     const confidenceMaskRaw = extractForegroundConfidenceMask(result.confidenceMasks);
 
     if (!categoryMask || !(categoryMask instanceof Uint8Array)) {
       throw new Error('MediaPipe failed to return category mask');
+    }
+
+    if (this.labels.length && categoryMask && foregroundRatio(categoryMask) < 0.001) {
+      console.warn('MediaPipe category mask stayed empty after fallback. Labels:', this.labels);
     }
 
     const output: SegmentationFrameResult = {
