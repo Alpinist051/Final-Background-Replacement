@@ -48,6 +48,14 @@ export interface EngineStats {
   processingHeight: number;
 }
 
+export interface EngineState {
+  status: 'idle' | 'starting' | 'running' | 'stopping' | 'error';
+  error: string | null;
+  stats: EngineStats;
+  tuning: VirtualBackgroundTuning;
+  background: BackgroundSource;
+}
+
 export interface SegmentationFrameResult {
   width: number;
   height: number;

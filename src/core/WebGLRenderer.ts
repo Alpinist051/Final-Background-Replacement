@@ -1,4 +1,4 @@
-import type { BackgroundSource, VirtualBackgroundTuning } from '@/types/engine';
+import type { BackgroundMode, BackgroundSource, VirtualBackgroundTuning } from '@/types/engine';
 import temporalShaderSource from '@/shaders/temporal.frag?raw';
 import bilateralShaderSource from '@/shaders/bilateral.frag?raw';
 import compositeShaderSource from '@/shaders/composite.frag?raw';
@@ -61,7 +61,7 @@ function createProgram(gl: WebGL2RenderingContext, fragmentSource: string) {
   return program;
 }
 
-function createTexture(gl: WebGL2RenderingContext, width: number, height: number, internalFormat = gl.RGBA8) {
+function createTexture(gl: WebGL2RenderingContext, width: number, height: number, internalFormat: number = gl.RGBA8) {
   const texture = gl.createTexture();
   if (!texture) {
     throw new Error('Unable to create texture.');
@@ -121,12 +121,16 @@ export class WebGLRenderer {
   private height = 1;
   private sourceTexture: WebGLTexture | null = null;
   private backgroundTexture: WebGLTexture | null = null;
+  private blurTexture: WebGLTexture | null = null;
   private currentMaskTexture: WebGLTexture | null = null;
   private confidenceTexture: WebGLTexture | null = null;
   private previousMaskTexture: WebGLTexture | null = null;
   private temporalTexture: WebGLTexture | null = null;
   private finalMaskTexture: WebGLTexture | null = null;
+  private fallbackCanvas: OffscreenCanvas | null = null;
+  private fallbackContext2d: OffscreenCanvasRenderingContext2D | null = null;
   private background: BackgroundSource = { mode: 'solid', color: '#111827' };
+  private backgroundMode: BackgroundMode = 'solid';
 
   constructor(canvas: OffscreenCanvas) {
     this.canvas = canvas;
@@ -183,6 +187,7 @@ export class WebGLRenderer {
 
     this.sourceTexture = createTexture(gl, width, height);
     this.backgroundTexture = createTexture(gl, width, height);
+    this.blurTexture = createTexture(gl, width, height);
     this.currentMaskTexture = createTexture(gl, width, height, gl.R8);
     this.confidenceTexture = createTexture(gl, width, height, gl.R8);
     this.previousMaskTexture = createTexture(gl, width, height, gl.R8);
@@ -202,16 +207,19 @@ export class WebGLRenderer {
 
   setBackground(background: BackgroundSource) {
     this.background = background;
-    if (!this.gl || !this.backgroundTexture || background.mode !== 'solid') return;
+    this.backgroundMode = background.mode;
+    if (!this.gl || !this.backgroundTexture) return;
 
-    const rgba = parseHexColor(background.color);
-    const bytes = new Uint8Array(rgba.map((value) => Math.round(value * 255)));
-    this.gl.bindTexture(this.gl.TEXTURE_2D, this.backgroundTexture);
-    this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, 1, 1, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, bytes);
+    if (background.mode === 'solid') {
+      this.applySolidBackground(background.color);
+    }
   }
 
   setBackgroundBitmap(bitmap: ImageBitmap) {
     if (!this.gl || !this.backgroundTexture) return;
+    if (this.backgroundMode !== 'image' && this.backgroundMode !== 'video') {
+      return;
+    }
     uploadBitmap(this.gl, this.backgroundTexture, bitmap);
   }
 
@@ -225,7 +233,7 @@ export class WebGLRenderer {
     const gl = this.gl;
     this.resize(frame.width, frame.height);
 
-    if (!this.sourceTexture || !this.backgroundTexture || !this.currentMaskTexture || !this.confidenceTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
+    if (!this.sourceTexture || !this.backgroundTexture || !this.blurTexture || !this.currentMaskTexture || !this.confidenceTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
       return;
     }
 
@@ -233,18 +241,58 @@ export class WebGLRenderer {
     uploadMask(gl, this.currentMaskTexture, alphaMask, frame.width, frame.height);
     uploadMask(gl, this.confidenceTexture, confidenceMask, frame.width, frame.height);
 
-    if (this.background.mode === 'image' || this.background.mode === 'video') {
-      if (backgroundFrame) {
-        uploadBitmap(gl, this.backgroundTexture, backgroundFrame);
-      }
-    } else if (this.background.mode === 'blur') {
-      this.runBlurPass();
+    switch (this.backgroundMode) {
+      case 'solid':
+        this.renderSolidFrame(tuning);
+        break;
+      case 'image':
+        this.renderImageFrame(backgroundFrame, tuning);
+        break;
+      case 'video':
+        this.renderVideoFrame(backgroundFrame, tuning);
+        break;
+      case 'blur':
+        this.renderBlurFrame(tuning);
+        break;
     }
+    this.swapMaskTextures();
+  }
 
+  private applySolidBackground(color: string) {
+    if (!this.gl || !this.backgroundTexture) return;
+    const rgba = parseHexColor(color);
+    const bytes = new Uint8Array(rgba.map((value) => Math.round(value * 255)));
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.backgroundTexture);
+    this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, 1, 1, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, bytes);
+  }
+
+  private renderWithMaskAndComposite(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
     this.runTemporalPass(tuning);
     this.runBilateralPass(tuning);
-    this.runCompositePass(tuning);
-    this.swapMaskTextures();
+    this.runCompositePass(backgroundTexture, tuning);
+  }
+
+  private renderSolidFrame(tuning: VirtualBackgroundTuning) {
+    this.renderWithMaskAndComposite(this.backgroundTexture, tuning);
+  }
+
+  private renderImageFrame(backgroundFrame: ImageBitmap | null | undefined, tuning: VirtualBackgroundTuning) {
+    if (backgroundFrame && this.gl && this.backgroundTexture) {
+      uploadBitmap(this.gl, this.backgroundTexture, backgroundFrame);
+    }
+    this.renderWithMaskAndComposite(this.backgroundTexture, tuning);
+  }
+
+  private renderVideoFrame(backgroundFrame: ImageBitmap | null | undefined, tuning: VirtualBackgroundTuning) {
+    if (backgroundFrame && this.gl && this.backgroundTexture) {
+      uploadBitmap(this.gl, this.backgroundTexture, backgroundFrame);
+    }
+    this.renderWithMaskAndComposite(this.backgroundTexture, tuning);
+  }
+
+  private renderBlurFrame(tuning: VirtualBackgroundTuning) {
+    this.runBlurPass();
+    this.renderWithMaskAndComposite(this.blurTexture, tuning);
   }
 
   private bindQuad(program: WebGLProgram) {
@@ -282,6 +330,9 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target, 0);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     renderBody();
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
@@ -311,22 +362,22 @@ export class WebGLRenderer {
   }
 
   private runBlurPass() {
-    if (!this.gl || !this.blurProgram || !this.backgroundTexture || !this.sourceTexture) return;
-    this.drawToTexture(this.backgroundTexture, this.blurProgram, () => {
+    if (!this.gl || !this.blurProgram || !this.blurTexture || !this.sourceTexture) return;
+    this.drawToTexture(this.blurTexture, this.blurProgram, () => {
       this.bindQuad(this.blurProgram as WebGLProgram);
       this.setTexture(this.blurProgram as WebGLProgram, 'u_image', this.sourceTexture, 0);
       this.setVec2(this.blurProgram as WebGLProgram, 'u_texelSize', 1 / this.width, 1 / this.height);
     });
   }
 
-  private runCompositePass(tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.backgroundTexture || !this.finalMaskTexture) return;
+  private runCompositePass(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
+    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !backgroundTexture) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
     this.bindQuad(this.compositeProgram);
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
-    this.setTexture(this.compositeProgram, 'u_background', this.backgroundTexture, 1);
+    this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
     this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
     this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
     this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
@@ -346,12 +397,21 @@ export class WebGLRenderer {
     this.canvas.width = frame.width;
     this.canvas.height = frame.height;
 
+    if (!this.fallbackCanvas || this.fallbackCanvas.width !== frame.width || this.fallbackCanvas.height !== frame.height) {
+      this.fallbackCanvas = new OffscreenCanvas(frame.width, frame.height);
+      this.fallbackContext2d = this.fallbackCanvas.getContext('2d', { willReadFrequently: true });
+    }
+
+    const tempContext = this.fallbackContext2d;
+    if (!tempContext) return;
+
     context.clearRect(0, 0, frame.width, frame.height);
+    tempContext.clearRect(0, 0, frame.width, frame.height);
 
     if (this.background.mode === 'solid') {
       context.fillStyle = this.background.color;
       context.fillRect(0, 0, frame.width, frame.height);
-    } else if (this.background.mode === 'image' || this.background.mode === 'video') {
+    } else if (this.backgroundMode === 'image' || this.backgroundMode === 'video') {
       if (backgroundFrame) {
         context.drawImage(backgroundFrame, 0, 0, frame.width, frame.height);
       } else {
@@ -363,14 +423,14 @@ export class WebGLRenderer {
       context.filter = 'none';
     }
 
-    context.drawImage(frame, 0, 0, frame.width, frame.height);
-    const imageData = context.getImageData(0, 0, frame.width, frame.height);
+    tempContext.drawImage(frame, 0, 0, frame.width, frame.height);
+    const imageData = tempContext.getImageData(0, 0, frame.width, frame.height);
     const pixels = imageData.data;
     for (let i = 0; i < alphaMask.length; i += 1) {
       pixels[i * 4 + 3] = Math.round(Math.max(0, Math.min(1, alphaMask[i])) * 255);
     }
-    context.putImageData(imageData, 0, 0);
-    context.setTransform(1, 0, 0, 1, 0, 0);
+    tempContext.putImageData(imageData, 0, 0);
+    context.drawImage(this.fallbackCanvas, 0, 0);
   }
 
   destroy() {

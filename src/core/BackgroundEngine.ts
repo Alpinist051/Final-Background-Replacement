@@ -1,4 +1,4 @@
-import type { BackgroundSource, EngineStats, VirtualBackgroundTuning, QualityUpdate } from '@/types/engine';
+import type { BackgroundMode, BackgroundSource, EngineStats, QualityUpdate, VirtualBackgroundTuning } from '@/types/engine';
 import { loadImageBitmap } from '@/utils/canvasUtils';
 
 type EngineCallbacks = {
@@ -25,6 +25,8 @@ function cloneBackgroundSource(background: BackgroundSource): BackgroundSource {
       return { mode: 'video', url: background.url, label: background.label, loop: background.loop };
     case 'blur':
       return { mode: 'blur', strength: background.strength };
+    default:
+      return background;
   }
 }
 
@@ -49,13 +51,13 @@ export class BackgroundEngine {
   private cameraStream: MediaStream | null = null;
   private backgroundVideo: HTMLVideoElement | null = null;
   private backgroundVideoTransferWarningShown = false;
+  private backgroundRevision = 0;
   private offscreenCanvas: OffscreenCanvas | null = null;
   private canvasTransferred = false;
   private running = false;
   private inFlight = false;
   private queuedFrame = false;
   private processedStream: MediaStream | null = null;
-  private initialized = false;
 
   private tuning: VirtualBackgroundTuning = {
     temporalAlpha: 0.82,
@@ -117,12 +119,12 @@ export class BackgroundEngine {
         background: cloneBackgroundSource(this.background)
       }, [this.offscreenCanvas]);
       this.canvasTransferred = true;
-      this.initialized = true;
     } else {
       this.worker!.postMessage({ type: 'resize', width, height });
       this.worker!.postMessage({ type: 'tuning', tuning: cloneTuning(this.tuning) });
-      this.worker!.postMessage({ type: 'background', background: cloneBackgroundSource(this.background) });
     }
+
+    void this.syncBackgroundToWorker();
 
     this.running = true;
     this.callbacks.onStatus?.('running');
@@ -136,30 +138,7 @@ export class BackgroundEngine {
 
   async setBackground(background: BackgroundSource) {
     this.background = cloneBackgroundSource(background);
-    if (!this.worker) return;
-
-    if (this.background.mode === 'image') {
-      const bitmap = await loadImageBitmap(this.background.url);
-      this.worker.postMessage({ type: 'background', background: cloneBackgroundSource(this.background), bitmap }, [bitmap]);
-      return;
-    }
-
-    if (this.background.mode === 'video') {
-      this.backgroundVideo?.pause();
-      this.backgroundVideo = null;
-      const video = document.createElement('video');
-      video.crossOrigin = 'anonymous';
-      video.src = this.background.url;
-      video.loop = this.background.loop ?? true;
-      video.autoplay = true;
-      video.muted = true;
-      video.playsInline = true;
-      await video.play().catch(() => { });
-      this.backgroundVideo = video;
-      this.backgroundVideoTransferWarningShown = false;
-    }
-
-    this.worker.postMessage({ type: 'background', background: cloneBackgroundSource(this.background) });
+    await this.syncBackgroundToWorker();
   }
 
   getProcessedTrack() {
@@ -173,8 +152,8 @@ export class BackgroundEngine {
     this.callbacks.onStatus?.('stopping');
     this.cameraStream?.getTracks().forEach(t => t.stop());
     this.cameraStream = null;
-    this.backgroundVideo?.pause();
-    this.backgroundVideo = null;
+    this.stopBackgroundVideo();
+    this.backgroundRevision += 1;
     this.callbacks.onStatus?.('idle');
   }
 
@@ -183,8 +162,8 @@ export class BackgroundEngine {
     this.worker?.postMessage({ type: 'stop' });
     this.worker?.terminate();
     this.worker = null;
-    this.initialized = false;
     this.processedStream = null;
+    this.backgroundRevision += 1;
   }
 
   private resizeCanvas() {
@@ -224,6 +203,58 @@ export class BackgroundEngine {
     };
   }
 
+  private stopBackgroundVideo() {
+    this.backgroundVideo?.pause();
+    this.backgroundVideo = null;
+    this.backgroundVideoTransferWarningShown = false;
+  }
+
+  private async syncBackgroundToWorker() {
+    if (!this.worker) return;
+
+    const revision = ++this.backgroundRevision;
+    const background = cloneBackgroundSource(this.background);
+
+    switch (background.mode) {
+      case 'solid':
+      case 'blur':
+        this.stopBackgroundVideo();
+        this.worker.postMessage({ type: 'background', background });
+        return;
+      case 'video': {
+        this.stopBackgroundVideo();
+        const video = document.createElement('video');
+        video.crossOrigin = 'anonymous';
+        video.src = background.url;
+        video.loop = background.loop ?? true;
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        await video.play().catch(() => { });
+        if (revision !== this.backgroundRevision || !this.worker) {
+          video.pause();
+          return;
+        }
+        this.backgroundVideo = video;
+        this.worker.postMessage({ type: 'background', background });
+        return;
+      }
+      case 'image':
+        try {
+          this.stopBackgroundVideo();
+          const bitmap = await loadImageBitmap(background.url);
+          if (revision !== this.backgroundRevision || !this.worker) {
+            bitmap.close();
+            return;
+          }
+          this.worker.postMessage({ type: 'background', background, bitmap }, [bitmap]);
+        } catch (error) {
+          this.callbacks.onError?.(error instanceof Error ? error.message : 'Failed to load background image');
+        }
+        return;
+    }
+  }
+
   private async pump() {
     if (!this.running || !this.worker) return;
     if (this.inFlight) { this.queuedFrame = true; return; }
@@ -237,13 +268,16 @@ export class BackgroundEngine {
     const frame = await createImageBitmap(this.videoElement);
     let backgroundFrame: ImageBitmap | null = null;
 
-    if (this.background.mode === 'video' && this.backgroundVideo?.readyState >= 2) {
-      try {
-        backgroundFrame = await createImageBitmap(this.backgroundVideo);
-      } catch (error) {
-        if (!this.backgroundVideoTransferWarningShown) {
-          this.backgroundVideoTransferWarningShown = true;
-          console.warn('Video background is not origin-clean, so it cannot be transferred to the worker. Use a CORS-enabled video source or a local file for animated backgrounds.', error);
+    if (this.background.mode === 'video') {
+      const backgroundVideo = this.backgroundVideo;
+      if (backgroundVideo && backgroundVideo.readyState >= 2) {
+        try {
+          backgroundFrame = await createImageBitmap(backgroundVideo);
+        } catch (error) {
+          if (!this.backgroundVideoTransferWarningShown) {
+            this.backgroundVideoTransferWarningShown = true;
+            console.warn('Video background is not origin-clean, so it cannot be transferred to the worker. Use a CORS-enabled video source or a local file for animated backgrounds.', error);
+          }
         }
       }
     }
