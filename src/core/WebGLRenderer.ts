@@ -8,7 +8,9 @@ const vertexShaderSource = `#version 300 es
 layout(location = 0) in vec2 a_position;
 out vec2 v_uv;
 void main() {
-  v_uv = (a_position + 1.0) * 0.5;
+  vec2 uv = (a_position + 1.0) * 0.5;
+  // Mirror the final output so the published/previewed track reads naturally.
+  v_uv = vec2(1.0 - uv.x, uv.y);
   gl_Position = vec4(a_position, 0.0, 1.0);
 }`;
 
@@ -340,6 +342,9 @@ export class WebGLRenderer {
     this.canvas.width = frame.width;
     this.canvas.height = frame.height;
 
+    context.setTransform(-1, 0, 0, 1, frame.width, 0);
+    context.clearRect(0, 0, frame.width, frame.height);
+
     if (this.background.mode === 'solid') {
       context.fillStyle = this.background.color;
       context.fillRect(0, 0, frame.width, frame.height);
@@ -362,6 +367,7 @@ export class WebGLRenderer {
       pixels[i * 4 + 3] = Math.round(Math.max(0, Math.min(1, alphaMask[i])) * 255);
     }
     context.putImageData(imageData, 0, 0);
+    context.setTransform(1, 0, 0, 1, 0, 0);
   }
 
   destroy() {
