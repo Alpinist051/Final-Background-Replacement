@@ -111,7 +111,11 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   }
 
   processingContext.clearRect(0, 0, processingCanvas.width, processingCanvas.height);
+  // Rotate 180 degrees so upside-down camera sensors render upright in both
+  // segmentation and the final composite.
+  processingContext.setTransform(-1, 0, 0, -1, processingCanvas.width, processingCanvas.height);
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
+  processingContext.setTransform(1, 0, 0, 1, 0, 0);
   return createImageBitmap(processingCanvas);
 }
 
@@ -225,7 +229,7 @@ async function processTick() {
   pendingFrame = null;
   pendingBackgroundFrame = null;
 
-  const processedBitmap = degraded ? sourceFrame : await drawForProcessing(sourceFrame);
+  const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
   const tuning = boostTuning(brightness, motion);
 
