@@ -15,6 +15,19 @@ const defaultTuning: VirtualBackgroundTuning = {
 
 const defaultBackground: BackgroundSource = { mode: 'solid', color: '#111827' };
 
+function cloneBackgroundSource(background: BackgroundSource): BackgroundSource {
+  switch (background.mode) {
+    case 'solid':
+      return { mode: 'solid', color: background.color };
+    case 'image':
+      return { mode: 'image', url: background.url, label: background.label };
+    case 'video':
+      return { mode: 'video', url: background.url, label: background.label, loop: background.loop };
+    case 'blur':
+      return { mode: 'blur', strength: background.strength };
+  }
+}
+
 export function useVirtualBackground() {
   const canvasRef = shallowRef<HTMLCanvasElement | null>(null);
   const engineRef = shallowRef<BackgroundEngine | null>(null);
@@ -78,8 +91,8 @@ export function useVirtualBackground() {
   }
 
   async function setBackground(background: BackgroundSource) {
-    state.background = background;
-    await engineRef.value?.setBackground(background);
+    state.background = cloneBackgroundSource(background);
+    await engineRef.value?.setBackground(cloneBackgroundSource(background));
   }
 
   function destroy() {

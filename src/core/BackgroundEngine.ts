@@ -15,6 +15,19 @@ type WorkerEnvelope =
   | { type: 'quality'; quality: QualityUpdate }
   | { type: 'error'; error: string };
 
+function cloneBackgroundSource(background: BackgroundSource): BackgroundSource {
+  switch (background.mode) {
+    case 'solid':
+      return { mode: 'solid', color: background.color };
+    case 'image':
+      return { mode: 'image', url: background.url, label: background.label };
+    case 'video':
+      return { mode: 'video', url: background.url, label: background.label, loop: background.loop };
+    case 'blur':
+      return { mode: 'blur', strength: background.strength };
+  }
+}
+
 export class BackgroundEngine {
   private readonly videoElement: HTMLVideoElement;
   private readonly canvas: HTMLCanvasElement;
@@ -81,7 +94,7 @@ export class BackgroundEngine {
       width: this.canvas.width,
       height: this.canvas.height,
       tuning: this.tuning,
-      background: this.background
+      background: cloneBackgroundSource(this.background)
     }, [offscreen]);
 
     this.initialized = true;
@@ -96,21 +109,21 @@ export class BackgroundEngine {
   }
 
   async setBackground(background: BackgroundSource) {
-    this.background = background;
+    this.background = cloneBackgroundSource(background);
     if (!this.worker) return;
 
-    if (background.mode === 'image') {
-      const bitmap = await loadImageBitmap(background.url);
-      this.worker.postMessage({ type: 'background', background, bitmap }, [bitmap]);
+    if (this.background.mode === 'image') {
+      const bitmap = await loadImageBitmap(this.background.url);
+      this.worker.postMessage({ type: 'background', background: cloneBackgroundSource(this.background), bitmap }, [bitmap]);
       return;
     }
 
-    if (background.mode === 'video') {
+    if (this.background.mode === 'video') {
       this.backgroundVideo?.pause();
       this.backgroundVideo = null;
       const video = document.createElement('video');
-      video.src = background.url;
-      video.loop = background.loop ?? true;
+      video.src = this.background.url;
+      video.loop = this.background.loop ?? true;
       video.autoplay = true;
       video.muted = true;
       video.playsInline = true;
@@ -118,7 +131,7 @@ export class BackgroundEngine {
       this.backgroundVideo = video;
     }
 
-    this.worker.postMessage({ type: 'background', background });
+    this.worker.postMessage({ type: 'background', background: cloneBackgroundSource(this.background) });
   }
 
   getProcessedTrack() {
