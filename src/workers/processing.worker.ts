@@ -159,8 +159,8 @@ async function drawForProcessing(bitmap: ImageBitmap) {
 function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segmentationMs: number, motion: number) {
   if (qualityTier >= 2) {
     return fps < 20 || segmentationMs > 80
-      ? { maxWidth: 224, maxHeight: 224 }
-      : { maxWidth: 256, maxHeight: 256 };
+      ? { maxWidth: 256, maxHeight: 256 }
+      : { maxWidth: 288, maxHeight: 288 };
   }
 
   if (fps > 28 && segmentationMs < 55) {
@@ -168,14 +168,14 @@ function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segment
   }
 
   if (fps < 24 || segmentationMs > 60) {
-    return { maxWidth: 256, maxHeight: 256 };
+    return { maxWidth: 288, maxHeight: 288 };
   }
 
   if (motion > 0.08) {
     return { maxWidth: 384, maxHeight: 384 };
   }
 
-  return { maxWidth: 320, maxHeight: 320 };
+  return { maxWidth: 352, maxHeight: 352 };
 }
 
 async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, maxHeight: number) {
@@ -192,19 +192,19 @@ async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, m
 function chooseSubjectRefreshInterval(motion: number, fps: number, segmentationMs: number, qualityTier: number) {
   const overloaded = fps < 24 || segmentationMs > 60 || qualityTier >= 2;
 
-  if (motion > 0.08) {
+  if (motion > 0.05) {
     return overloaded ? 2 : 1;
   }
 
-  if (motion > 0.04) {
-    return overloaded ? 3 : 2;
+  if (motion > 0.025) {
+    return overloaded ? 2 : 1;
   }
 
   if (overloaded) {
-    return qualityTier >= 2 ? 5 : 4;
+    return qualityTier >= 2 ? 4 : 3;
   }
 
-  return 3;
+  return 2;
 }
 
 function computeLuma(bitmap: ImageBitmap) {
@@ -248,7 +248,7 @@ function boostTuning(brightness: number, motion: number, processedMask: Processe
   }
   boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
   boosted.temporalAlpha = Math.min(0.94, Math.max(0.74, boosted.temporalAlpha + motionIntensity * 0.04));
-  boosted.motionBoost = Math.max(0.22, Math.min(0.38, 0.32 - motionIntensity * 0.05));
+  boosted.motionBoost = Math.max(0.28, Math.min(0.62, 0.34 + motionIntensity * 0.22));
   return boosted;
 }
 
@@ -320,7 +320,10 @@ async function processTick() {
 
   let subjectBitmap: ImageBitmap | null = null;
   if (refreshSubject) {
-    subjectBitmap = await drawForSubjectProcessing(processedBitmap, subjectBounds.maxWidth, subjectBounds.maxHeight);
+    // Use the original frame here so the subject branch is transformed exactly once.
+    // Feeding it the already-processed bitmap would introduce a second flip and make
+    // the subject mask drift away from the selfie branch.
+    subjectBitmap = await drawForSubjectProcessing(sourceFrame, subjectBounds.maxWidth, subjectBounds.maxHeight);
   }
 
   const segmentationStart = performance.now();

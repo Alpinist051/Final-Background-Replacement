@@ -20,6 +20,7 @@ if (typeof importFallbackHost.import !== 'function') {
 }
 
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
+const SELFIE_MODEL_MULTICLASS_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite';
 const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
 const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite';
 const SUBJECT_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite';
@@ -73,34 +74,35 @@ function extractForegroundConfidenceMask(
   const floatMasks = masks.map(extractMaskFloats);
   const primary = floatMasks[0];
   const backgroundIndex = findBackgroundIndex(labels);
-  const hasNonBackgroundLabel = labels.some((label) => label && !/background/i.test(label));
   const output = new Float32Array(primary.length);
 
   for (let i = 0; i < primary.length; i += 1) {
     let foregroundConfidence = 0;
-    if (floatMasks.length > 1 && categoryMask) {
+    if (categoryMask) {
       const selectedIndex = categoryMask[i] ?? 0;
       const label = labels[selectedIndex] ?? '';
       if (!/background/i.test(label)) {
         foregroundConfidence = floatMasks[selectedIndex]?.[i] ?? 0;
+      } else if (backgroundIndex >= 0) {
+        foregroundConfidence = 1 - (floatMasks[backgroundIndex][i] ?? 0);
       }
     }
 
-    if (!foregroundConfidence && floatMasks.length > 1) {
-      for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
-        const label = labels[maskIndex] ?? '';
-        if (/background/i.test(label)) continue;
-        foregroundConfidence = Math.max(foregroundConfidence, floatMasks[maskIndex][i] ?? 0);
+    if (!foregroundConfidence) {
+      if (floatMasks.length === 1) {
+        const singleLabel = labels[0] ?? '';
+        foregroundConfidence = /background/i.test(singleLabel)
+          ? 1 - primary[i]
+          : primary[i];
+      } else if (backgroundIndex >= 0) {
+        foregroundConfidence = 1 - (floatMasks[backgroundIndex][i] ?? 0);
+      } else {
+        for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
+          const label = labels[maskIndex] ?? '';
+          if (/background/i.test(label)) continue;
+          foregroundConfidence = Math.max(foregroundConfidence, floatMasks[maskIndex][i] ?? 0);
+        }
       }
-    } else {
-      const singleLabel = labels[0] ?? '';
-      foregroundConfidence = hasNonBackgroundLabel || !/background/i.test(singleLabel)
-        ? primary[i]
-        : 1 - primary[i];
-    }
-
-    if (!foregroundConfidence && backgroundIndex >= 0 && floatMasks.length > 1) {
-      foregroundConfidence = 1 - (floatMasks[backgroundIndex][i] ?? 0);
     }
 
     output[i] = Math.max(0, Math.min(1, foregroundConfidence));
@@ -117,26 +119,12 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
   if (!length) return undefined;
   const backgroundIndex = findBackgroundIndex(labels);
 
-  const classWeights = new Float32Array(Math.max(1, labels.length));
-  for (let i = 0; i < classWeights.length; i += 1) {
-    const label = labels[i]?.toLowerCase?.() ?? '';
-    if (/background/i.test(label)) {
-      classWeights[i] = 1;
-    } else if (/(person|human|selfie)/i.test(label)) {
-      classWeights[i] = 1.08;
-    } else if (/(cat|dog|horse|cow|sheep|bird|car|bus|train|bicycle|motorbike|boat|chair|sofa|table|plant|potted plant)/i.test(label)) {
-      classWeights[i] = 1.04;
-    } else {
-      classWeights[i] = 1.0;
-    }
-  }
-
   const output = new Uint8Array(length);
   for (let i = 0; i < length; i += 1) {
     let bestIndex = backgroundIndex >= 0 ? backgroundIndex : 0;
     let bestValue = -Infinity;
     for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
-      const candidate = (floatMasks[maskIndex][i] ?? 0) * (classWeights[maskIndex] ?? 1);
+      const candidate = floatMasks[maskIndex][i] ?? 0;
       if (candidate > bestValue) {
         bestValue = candidate;
         bestIndex = maskIndex;
@@ -189,8 +177,10 @@ function resampleConfidenceMask(source: Float32Array, sourceWidth: number, sourc
   return output;
 }
 
-function chooseSelfieModelUrl(width: number, height: number) {
-  return width >= height ? SELFIE_MODEL_LANDSCAPE_URL : SELFIE_MODEL_SQUARE_URL;
+function chooseSelfieModelCandidates(width: number, height: number) {
+  const primaryFallback = width >= height ? SELFIE_MODEL_LANDSCAPE_URL : SELFIE_MODEL_SQUARE_URL;
+  const secondaryFallback = width >= height ? SELFIE_MODEL_SQUARE_URL : SELFIE_MODEL_LANDSCAPE_URL;
+  return [SELFIE_MODEL_MULTICLASS_URL, primaryFallback, secondaryFallback];
 }
 
 async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>, modelAssetPath: string) {
@@ -249,18 +239,23 @@ export class SegmentationManager {
 
     const vision = await FilesetResolver.forVisionTasks(VISION_WASM_URL);
 
-    this.selfieModelUrl = chooseSelfieModelUrl(sourceWidth, sourceHeight);
+    const selfieModelCandidates = chooseSelfieModelCandidates(sourceWidth, sourceHeight);
 
     if (!this.selfieSegmenter) {
-      try {
-        const selfieSegmenter = await createSegmenter(vision, this.selfieModelUrl);
-        this.selfieSegmenter = {
-          segmenter: selfieSegmenter,
-          kind: 'selfie',
-          labels: selfieSegmenter.getLabels()
-        };
-      } catch (error) {
-        console.warn('Selfie segmentation model failed to initialize.', error);
+      for (const modelAssetPath of selfieModelCandidates) {
+        try {
+          const selfieSegmenter = await createSegmenter(vision, modelAssetPath);
+          this.selfieSegmenter = {
+            segmenter: selfieSegmenter,
+            kind: 'selfie',
+            labels: selfieSegmenter.getLabels()
+          };
+          this.selfieModelUrl = modelAssetPath;
+          break;
+        } catch (error) {
+          const modelName = modelAssetPath === SELFIE_MODEL_MULTICLASS_URL ? 'Selfie multiclass segmentation model' : 'Selfie segmentation model';
+          console.warn(`${modelName} failed to initialize.`, error);
+        }
       }
     }
 
@@ -297,9 +292,11 @@ export class SegmentationManager {
     const sourceHeight = frame.height;
 
     let categoryMask = extractCategoryMask(result.categoryMask);
-    const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, slot.labels);
-    if (derivedMask && (!categoryMask || foregroundRatio(categoryMask, slot.labels) < 0.001)) {
-      categoryMask = derivedMask;
+    if (!categoryMask || foregroundRatio(categoryMask, slot.labels) < 0.001) {
+      const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, slot.labels);
+      if (derivedMask) {
+        categoryMask = derivedMask;
+      }
     }
     const confidenceMask = extractForegroundConfidenceMask(result.confidenceMasks, slot.labels, categoryMask);
 

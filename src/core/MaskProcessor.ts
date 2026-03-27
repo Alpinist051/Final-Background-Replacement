@@ -19,166 +19,221 @@ function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
 }
 
+type BranchKind = SegmentationFrameResult['branches'][number]['kind'];
+type LabelClass = 0 | 1 | 2 | 3;
+
+type LabelProfile = {
+  weights: Float32Array;
+  classes: Uint8Array;
+};
+
+function normalizeLabel(label: string) {
+  return label.trim().toLowerCase().replace(/[_-]+/g, ' ');
+}
+
 function isBackgroundLabel(label: string) {
-  return /background/i.test(label);
+  return /background/i.test(normalizeLabel(label));
 }
 
 function isHumanLabel(label: string) {
-  return /(person|human|selfie|body|torso|arm|leg|hand|foot|head|face|hair|skin|shirt|clothes|clothing|coat|jacket|dress|pants|skirt|sleeve)/i.test(label);
-}
-
-function isSubjectLabel(label: string) {
-  return !isBackgroundLabel(label) && !isHumanLabel(label);
+  const normalized = normalizeLabel(label);
+  return /(person|human|selfie|body|torso|arm|leg|hand|foot|head|face|hair|skin|shirt|clothes|clothing|coat|jacket|dress|pants|skirt|sleeve|others?|accessor(y|ies)?|glasses|sunglasses)/i.test(normalized);
 }
 
 function isStrongSubjectLabel(label: string) {
-  return /(cat|dog|horse|cow|sheep|bird|car|bus|train|bicycle|motorbike|boat|chair|sofa|table|plant|potted plant|tv|monitor|laptop|book|bottle|cup|bag|backpack|keyboard|mouse|phone|bench)/i.test(label);
+  const normalized = normalizeLabel(label);
+  return /(cat|dog|horse|cow|sheep|bird|car|bus|train|bicycle|motorbike|motorcycle|boat|chair|sofa|couch|table|dining table|plant|potted plant|tv|television|monitor|laptop|book|bottle|cup|bag|backpack|keyboard|mouse|phone|bench|airplane|aeroplane)/i.test(normalized);
 }
 
-function isForegroundCategory(kind: SegmentationFrameResult['branches'][number]['kind'], label: string) {
-  const normalized = label.trim().toLowerCase();
-  if (!normalized || isBackgroundLabel(normalized)) return false;
-  if (kind === 'selfie') return true;
-  return isHumanLabel(normalized) || isStrongSubjectLabel(normalized);
+function classifyLabel(label: string): LabelClass {
+  if (isBackgroundLabel(label)) return 0;
+  if (isHumanLabel(label)) return 1;
+  if (isStrongSubjectLabel(label)) return 3;
+  return 2;
 }
 
-function buildClassWeights(kind: SegmentationFrameResult['branches'][number]['kind'], labels: string[]) {
-  const weights = new Float32Array(Math.max(1, labels.length));
-  for (let i = 0; i < weights.length; i += 1) {
-    const label = labels[i]?.toLowerCase() ?? '';
-    if (isBackgroundLabel(label)) {
-      weights[i] = 0;
-    } else if (kind === 'selfie') {
-      weights[i] = isHumanLabel(label) ? 1.12 : 1.08;
-    } else if (isHumanLabel(label)) {
-      weights[i] = 1.06;
-    } else if (isStrongSubjectLabel(label)) {
-      weights[i] = 1.05;
-    } else {
-      weights[i] = 1.0;
+function dilateBinaryMask(source: Uint8Array, width: number, height: number, radius = 1) {
+  const output = new Uint8Array(source.length);
+  for (let y = 0; y < height; y += 1) {
+    const minY = Math.max(0, y - radius);
+    const maxY = Math.min(height - 1, y + radius);
+    for (let x = 0; x < width; x += 1) {
+      const minX = Math.max(0, x - radius);
+      const maxX = Math.min(width - 1, x + radius);
+      let value = 0;
+      for (let sampleY = minY; sampleY <= maxY && value === 0; sampleY += 1) {
+        const row = sampleY * width;
+        for (let sampleX = minX; sampleX <= maxX; sampleX += 1) {
+          if (source[row + sampleX] !== 0) {
+            value = 1;
+            break;
+          }
+        }
+      }
+      output[y * width + x] = value;
     }
   }
-  return weights;
+  return output;
 }
 
-function branchBoost(kind: SegmentationFrameResult['branches'][number]['kind']) {
-  return kind === 'selfie' ? 1.1 : 0.98;
+function buildClassProfile(kind: BranchKind, labels: string[]): LabelProfile {
+  const size = Math.max(1, labels.length);
+  const weights = new Float32Array(size);
+  const classes = new Uint8Array(size);
+
+  for (let i = 0; i < size; i += 1) {
+    const labelClass = classifyLabel(labels[i] ?? '');
+    classes[i] = labelClass;
+
+    if (labelClass === 0) {
+      weights[i] = 0;
+    } else if (labelClass === 1) {
+      weights[i] = kind === 'selfie' ? 1.1 : 0.96;
+    } else if (labelClass === 3) {
+      weights[i] = kind === 'selfie' ? 1.02 : 1.08;
+    } else {
+      weights[i] = kind === 'selfie' ? 1.01 : 1.0;
+    }
+  }
+
+  return { weights, classes };
 }
 
-function preserveFactor(kind: number) {
-  return kind === 1 ? 0.7 : kind === 2 ? 0.62 : 0.58;
+function branchBoost(kind: BranchKind) {
+  return kind === 'selfie' ? 1.04 : 1.0;
 }
 
 export class MaskProcessor {
   private previousAlphaMask: Float32Array | null = null;
-  private previousDominantTypes: Uint8Array | null = null;
-  private classWeightsKey = '';
-  private classWeights: Float32Array = new Float32Array([0, 1]);
+  private classProfileKey = '';
+  private classProfile: LabelProfile = {
+    weights: new Float32Array([0, 1]),
+    classes: new Uint8Array([0, 2])
+  };
 
-  private getClassWeights(kind: SegmentationFrameResult['branches'][number]['kind'], labels: string[]) {
+  private getClassProfile(kind: BranchKind, labels: string[]) {
     const key = `${kind}|${labels.join('|')}`;
-    if (key !== this.classWeightsKey) {
-      this.classWeightsKey = key;
-      this.classWeights = buildClassWeights(kind, labels);
+    if (key !== this.classProfileKey) {
+      this.classProfileKey = key;
+      this.classProfile = buildClassProfile(kind, labels);
     }
-    return this.classWeights;
+    return this.classProfile;
   }
 
   process(result: SegmentationFrameResult, tuning: VirtualBackgroundTuning, liveMotion = 0): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
     const motionFactor = clamp01(liveMotion * 3.5);
+    const hasSelfieBranch = branches.some((branch) => branch.kind === 'selfie');
     const orderedBranches = [
       ...branches.filter((branch) => branch.kind === 'selfie'),
       ...branches.filter((branch) => branch.kind === 'subject')
     ];
-    const hasSelfieBranch = orderedBranches.some((branch) => branch.kind === 'selfie');
 
-    const rawAlpha = createFloatBuffer(pixelCount);
+    const selfieAlpha = createFloatBuffer(pixelCount);
+    const subjectHumanAlpha = createFloatBuffer(pixelCount);
+    const subjectObjectAlpha = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount);
-    const dominantTypes = new Uint8Array(pixelCount);
-    const tuningBoost = Math.min(1.4, Math.max(0.9, tuning.confidenceBoost));
+    const tuningBoost = Math.min(1.32, Math.max(0.94, tuning.confidenceBoost));
 
     for (const branch of orderedBranches) {
-      const classWeights = this.getClassWeights(branch.kind, branch.labels);
+      const classProfile = this.getClassProfile(branch.kind, branch.labels);
       const kindBoost = branchBoost(branch.kind);
       const ageLimit = branch.kind === 'subject'
-        ? (motionFactor > 0.45 ? 180 : motionFactor > 0.2 ? 260 : 480)
+        ? (motionFactor > 0.45 ? 140 : motionFactor > 0.2 ? 220 : 360)
         : 0;
       const ageFloor = branch.kind === 'subject'
-        ? (motionFactor > 0.45 ? 0.3 : motionFactor > 0.2 ? 0.45 : 0.6)
+        ? (motionFactor > 0.45 ? 0.2 : motionFactor > 0.2 ? 0.34 : 0.5)
         : 1;
       const ageFactor = branch.kind === 'subject' ? Math.max(ageFloor, 1 - branch.ageMs / ageLimit) : 1;
       const sourceConfidence = branch.confidenceMask;
 
       for (let i = 0; i < pixelCount; i += 1) {
         const categoryIndex = branch.categoryMask[i] ?? 0;
-        const label = branch.labels[categoryIndex] ?? '';
-        if (!isForegroundCategory(branch.kind, label)) continue;
+        const labelClass = classProfile.classes[categoryIndex] ?? 0;
+        if (labelClass === 0) continue;
 
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i]) : 1;
-        const classWeight = classWeights[categoryIndex] ?? 1;
+        const classWeight = classProfile.weights[categoryIndex] ?? 1;
         let alpha = confidence * classWeight * kindBoost * ageFactor * tuningBoost;
 
-        if (branch.kind === 'subject' && isHumanLabel(label) && hasSelfieBranch && rawAlpha[i] > 0.18) {
+        if (branch.kind === 'selfie') {
+          alpha = Math.max(alpha, confidence * 0.95);
+          selfieAlpha[i] = Math.max(selfieAlpha[i], alpha);
+          confidenceMask[i] = Math.max(confidenceMask[i], clamp01(confidence * ageFactor));
           continue;
         }
 
-        if (branch.kind === 'selfie') {
-          alpha = Math.max(alpha, confidence * 0.82);
-        } else if (isHumanLabel(label)) {
-          alpha = Math.max(alpha, confidence > 0.7 ? confidence * 0.82 : confidence * 0.62);
-        } else if (isStrongSubjectLabel(label)) {
-          alpha = Math.max(alpha, confidence > 0.75 ? confidence * 0.88 : confidence * 0.68);
+        if (labelClass === 1) {
+          if (confidence >= 0.45) {
+            subjectHumanAlpha[i] = Math.max(subjectHumanAlpha[i], Math.max(alpha * 0.78, confidence * 0.68));
+          }
+        } else {
+          const objectThreshold = labelClass === 3 ? 0.35 : 0.45;
+          if (confidence >= objectThreshold) {
+            subjectObjectAlpha[i] = Math.max(
+              subjectObjectAlpha[i],
+              Math.max(alpha * (labelClass === 3 ? 0.98 : 0.9), confidence * (labelClass === 3 ? 0.82 : 0.75))
+            );
+          }
         }
 
-        alpha = clamp01(alpha);
-        if (alpha > rawAlpha[i]) {
-          rawAlpha[i] = alpha;
-          dominantTypes[i] = branch.kind === 'selfie' ? 1 : 2;
-        }
         confidenceMask[i] = Math.max(confidenceMask[i], clamp01(confidence * ageFactor));
       }
     }
 
+    const selfieSupport = new Uint8Array(pixelCount);
+    for (let i = 0; i < pixelCount; i += 1) {
+      selfieSupport[i] = selfieAlpha[i] > 0.16 ? 1 : 0;
+    }
+    const selfieHalo = hasSelfieBranch ? dilateBinaryMask(selfieSupport, width, height, 2) : null;
+
     const previousAlphaMask = this.previousAlphaMask;
-    const previousDominantTypes = this.previousDominantTypes;
     const nextAlphaMask = createFloatBuffer(pixelCount);
-    const nextDominantTypes = new Uint8Array(pixelCount);
 
     let motionMagnitude = 0;
     let foregroundPixels = 0;
     let alphaSum = 0;
     let confidenceSum = 0;
-    const useTemporalCarry = motionFactor < 0.1;
 
     for (let i = 0; i < pixelCount; i += 1) {
-      const currentAlpha = rawAlpha[i];
       const previousAlpha = previousAlphaMask?.[i] ?? 0;
-      const previousType = previousDominantTypes?.[i] ?? dominantTypes[i];
 
-      let alpha = currentAlpha;
-      if (useTemporalCarry && previousAlpha > 0 && currentAlpha < previousAlpha) {
-        alpha = Math.max(currentAlpha, previousAlpha * preserveFactor(previousType));
+      let currentAlpha = selfieAlpha[i];
+
+      if (subjectObjectAlpha[i] > currentAlpha) {
+        currentAlpha = subjectObjectAlpha[i];
       }
 
-      if (useTemporalCarry && alpha > 0.06 && currentAlpha === 0 && previousAlpha > 0.08) {
-        alpha = previousAlpha * 0.5;
+      const allowSubjectHuman = !hasSelfieBranch
+        || (selfieHalo?.[i] ?? 0) > 0
+        || subjectHumanAlpha[i] >= 0.72
+        || previousAlpha >= 0.55;
+      if (allowSubjectHuman && subjectHumanAlpha[i] > currentAlpha) {
+        currentAlpha = subjectHumanAlpha[i];
       }
 
-      nextAlphaMask[i] = clamp01(alpha);
-      nextDominantTypes[i] = currentAlpha > 0 ? dominantTypes[i] : (previousAlpha > 0 ? previousType : 0);
+      let alpha = clamp01(currentAlpha);
+      if (previousAlphaMask) {
+        const stability = clamp01(confidenceMask[i] * 0.85 + (1 - motionFactor) * 0.2);
+        const riseBlend = 0.42 + stability * 0.28;
+        const fallBlend = 0.18 + stability * 0.3;
+        alpha = alpha >= previousAlpha
+          ? previousAlpha + (alpha - previousAlpha) * riseBlend
+          : previousAlpha + (alpha - previousAlpha) * fallBlend;
+      }
+      alpha = clamp01(alpha);
+      nextAlphaMask[i] = alpha;
 
-      if (previousAlphaMask && Math.abs(currentAlpha - previousAlpha) > 0.15) {
+      if (previousAlphaMask && Math.abs(alpha - previousAlpha) > 0.12) {
         motionMagnitude += 1;
       }
-      if (nextAlphaMask[i] > 0.12) foregroundPixels += 1;
-      alphaSum += nextAlphaMask[i];
+      if (alpha > 0.12) foregroundPixels += 1;
+      alphaSum += alpha;
       confidenceSum += confidenceMask[i];
     }
 
     this.previousAlphaMask = new Float32Array(nextAlphaMask);
-    this.previousDominantTypes = new Uint8Array(nextDominantTypes);
 
     return {
       alphaMask: nextAlphaMask,
@@ -192,8 +247,10 @@ export class MaskProcessor {
 
   reset() {
     this.previousAlphaMask = null;
-    this.previousDominantTypes = null;
-    this.classWeightsKey = '';
-    this.classWeights = new Float32Array([0, 1]);
+    this.classProfileKey = '';
+    this.classProfile = {
+      weights: new Float32Array([0, 1]),
+      classes: new Uint8Array([0, 2])
+    };
   }
 }
