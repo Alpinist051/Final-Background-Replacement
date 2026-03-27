@@ -59,22 +59,38 @@ function extractMaskFloats(mask: MPMask): Float32Array {
     : Float32Array.from(mask.getAsUint8Array(), (value) => value / 255);
 }
 
-function extractForegroundConfidenceMask(masks: MPMask[] | undefined): Float32Array | undefined {
+function findBackgroundIndex(labels: string[]) {
+  return labels.findIndex((label) => /background/i.test(label));
+}
+
+function extractForegroundConfidenceMask(masks: MPMask[] | undefined, labels: string[]): Float32Array | undefined {
   if (!masks?.length) return undefined;
 
   const floatMasks = masks.map(extractMaskFloats);
   const primary = floatMasks[0];
+  const backgroundIndex = findBackgroundIndex(labels);
+  const hasNonBackgroundLabel = labels.some((label) => label && !/background/i.test(label));
   const output = new Float32Array(primary.length);
 
   for (let i = 0; i < primary.length; i += 1) {
     let foregroundConfidence = 0;
     if (floatMasks.length > 1) {
-      for (let maskIndex = 1; maskIndex < floatMasks.length; maskIndex += 1) {
+      for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
+        const label = labels[maskIndex] ?? '';
+        if (/background/i.test(label)) continue;
         foregroundConfidence = Math.max(foregroundConfidence, floatMasks[maskIndex][i] ?? 0);
       }
     } else {
-      foregroundConfidence = 1 - primary[i];
+      const singleLabel = labels[0] ?? '';
+      foregroundConfidence = hasNonBackgroundLabel || !/background/i.test(singleLabel)
+        ? primary[i]
+        : 1 - primary[i];
     }
+
+    if (!foregroundConfidence && backgroundIndex >= 0 && floatMasks.length > 1) {
+      foregroundConfidence = 1 - (floatMasks[backgroundIndex][i] ?? 0);
+    }
+
     output[i] = Math.max(0, Math.min(1, foregroundConfidence));
   }
 
@@ -87,6 +103,7 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
   const floatMasks = masks.map(extractMaskFloats);
   const length = floatMasks[0]?.length ?? 0;
   if (!length) return undefined;
+  const backgroundIndex = findBackgroundIndex(labels);
 
   const classWeights = new Float32Array(Math.max(1, labels.length));
   for (let i = 0; i < classWeights.length; i += 1) {
@@ -104,17 +121,16 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
 
   const output = new Uint8Array(length);
   for (let i = 0; i < length; i += 1) {
-    const backgroundValue = floatMasks[0][i] ?? 0;
-    let bestIndex = 0;
-    let bestValue = backgroundValue * classWeights[0];
-    for (let maskIndex = 1; maskIndex < floatMasks.length; maskIndex += 1) {
+    let bestIndex = backgroundIndex >= 0 ? backgroundIndex : 0;
+    let bestValue = -Infinity;
+    for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
       const candidate = (floatMasks[maskIndex][i] ?? 0) * (classWeights[maskIndex] ?? 1);
       if (candidate > bestValue) {
         bestValue = candidate;
         bestIndex = maskIndex;
       }
     }
-    output[i] = bestIndex !== 0 && bestValue >= 0.12 && bestValue >= backgroundValue * 0.74 ? bestIndex : 0;
+    output[i] = bestValue >= 0.12 ? bestIndex : (backgroundIndex >= 0 ? backgroundIndex : 0);
   }
 
   return output;
@@ -272,7 +288,7 @@ export class SegmentationManager {
     if (derivedMask && (!categoryMask || foregroundRatio(categoryMask) < 0.001)) {
       categoryMask = derivedMask;
     }
-    const confidenceMask = extractForegroundConfidenceMask(result.confidenceMasks);
+    const confidenceMask = extractForegroundConfidenceMask(result.confidenceMasks, slot.labels);
 
     if (!categoryMask || !(categoryMask instanceof Uint8Array)) {
       throw new Error('MediaPipe failed to return a category mask.');

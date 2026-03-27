@@ -163,16 +163,16 @@ function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segment
       : { maxWidth: 256, maxHeight: 256 };
   }
 
-  if (motion > 0.08 && fps > 30 && segmentationMs < 45) {
-    return { maxWidth: 384, maxHeight: 384 };
-  }
-
-  if (fps > 42 && segmentationMs < 35) {
+  if (fps > 28 && segmentationMs < 55) {
     return { maxWidth: 384, maxHeight: 384 };
   }
 
   if (fps < 24 || segmentationMs > 60) {
     return { maxWidth: 256, maxHeight: 256 };
+  }
+
+  if (motion > 0.08) {
+    return { maxWidth: 384, maxHeight: 384 };
   }
 
   return { maxWidth: 320, maxHeight: 320 };
