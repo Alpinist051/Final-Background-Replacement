@@ -62,9 +62,19 @@ export interface EngineState {
 export interface SegmentationFrameResult {
   width: number;
   height: number;
+  branches: SegmentationBranchResult[];
+}
+
+export type SegmentationBranchKind = 'selfie' | 'subject';
+
+export interface SegmentationBranchResult {
+  kind: SegmentationBranchKind;
+  width: number;
+  height: number;
   categoryMask: Uint8Array;
   confidenceMask?: Float32Array;
   labels: string[];
+  ageMs: number;
 }
 
 // Quality fallback message from worker

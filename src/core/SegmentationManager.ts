@@ -3,7 +3,11 @@ import {
   ImageSegmenter,
   type MPMask
 } from '@mediapipe/tasks-vision';
-import type { SegmentationFrameResult } from '@/types/engine';
+import type {
+  SegmentationBranchKind,
+  SegmentationBranchResult,
+  SegmentationFrameResult
+} from '@/types/engine';
 
 type ImportFallbackHost = typeof globalThis & {
   import?: (specifier: string) => Promise<unknown>;
@@ -16,7 +20,21 @@ if (typeof importFallbackHost.import !== 'function') {
 }
 
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
-const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
+const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite';
+const SUBJECT_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/latest/deeplab_v3.tflite';
+const SUBJECT_UPDATE_INTERVAL_FRAMES = 2;
+const SUBJECT_MAX_CACHE_AGE_MS = 120;
+
+type SegmenterSlot = {
+  segmenter: ImageSegmenter;
+  kind: SegmentationBranchKind;
+  labels: string[];
+};
+
+type CachedBranch = SegmentationBranchResult & {
+  updatedAtMs: number;
+};
 
 function extractCategoryMask(mask: MPMask | undefined): Uint8Array | undefined {
   if (!mask) return undefined;
@@ -72,12 +90,10 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
     const label = labels[i]?.toLowerCase?.() ?? '';
     if (/background/i.test(label)) {
       classWeights[i] = 1;
-    } else if (/hair/i.test(label)) {
-      classWeights[i] = 1.1;
-    } else if (/(face|body|person|skin|neck|torso|cloth|clothes|shirt|jacket|sleeve|upper)/i.test(label)) {
-      classWeights[i] = 1.05;
-    } else if (/(others|other|accessory|glasses|headset|object)/i.test(label)) {
-      classWeights[i] = 0.96;
+    } else if (/(person|human|selfie)/i.test(label)) {
+      classWeights[i] = 1.08;
+    } else if (/(cat|dog|horse|cow|sheep|bird|car|bus|train|bicycle|motorbike|boat|chair|sofa|table|plant|potted plant)/i.test(label)) {
+      classWeights[i] = 1.04;
     } else {
       classWeights[i] = 1.0;
     }
@@ -109,81 +125,182 @@ function foregroundRatio(categoryMask: Uint8Array) {
   return count / Math.max(1, categoryMask.length);
 }
 
-export class SegmentationManager {
-  private segmenter: ImageSegmenter | null = null;
-  private labels: string[] = [];
+function chooseSelfieModelUrl(width: number, height: number) {
+  return width >= height ? SELFIE_MODEL_LANDSCAPE_URL : SELFIE_MODEL_SQUARE_URL;
+}
 
-  async initialize(retry = 0): Promise<void> {
-    if (this.segmenter) return;
+async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>, modelAssetPath: string) {
+  try {
+    return await ImageSegmenter.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath,
+        delegate: 'GPU' as const
+      },
+      runningMode: 'VIDEO',
+      outputCategoryMask: true,
+      outputConfidenceMasks: true
+    });
+  } catch (err) {
+    console.warn('GPU delegate failed for segmentation model, falling back to CPU.', err);
+    return ImageSegmenter.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath,
+        delegate: 'CPU' as const
+      },
+      runningMode: 'VIDEO',
+      outputCategoryMask: true,
+      outputConfidenceMasks: true
+    });
+  }
+}
+
+function createBranchResult(
+  kind: SegmentationBranchKind,
+  frame: ImageBitmap,
+  categoryMask: Uint8Array,
+  confidenceMask: Float32Array | undefined,
+  labels: string[],
+  ageMs: number
+): SegmentationBranchResult {
+  return {
+    kind,
+    width: frame.width,
+    height: frame.height,
+    categoryMask,
+    confidenceMask,
+    labels,
+    ageMs
+  };
+}
+
+export class SegmentationManager {
+  private selfieSegmenter: SegmenterSlot | null = null;
+  private subjectSegmenter: SegmenterSlot | null = null;
+  private selfieModelUrl: string = SELFIE_MODEL_LANDSCAPE_URL;
+  private frameIndex = 0;
+  private cachedSubjectBranch: CachedBranch | null = null;
+
+  async initialize(sourceWidth = 1280, sourceHeight = 720): Promise<void> {
+    if (this.selfieSegmenter && this.subjectSegmenter) return;
 
     const vision = await FilesetResolver.forVisionTasks(VISION_WASM_URL);
 
-    try {
-      this.segmenter = await ImageSegmenter.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: MODEL_URL,
-          delegate: 'GPU' as const
-        },
-        runningMode: 'VIDEO',
-        outputCategoryMask: true,
-        outputConfidenceMasks: true
-      });
-    } catch (err) {
-      if (retry < 1) {
-        // One-time graceful fallback to CPU
-        console.warn('GPU delegate failed, falling back to CPU (still high quality)');
-        this.segmenter = await ImageSegmenter.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' as const },
-          runningMode: 'VIDEO',
-          outputCategoryMask: true,
-          outputConfidenceMasks: true
-        });
-      } else {
-        throw err;
+    this.selfieModelUrl = chooseSelfieModelUrl(sourceWidth, sourceHeight);
+
+    if (!this.selfieSegmenter) {
+      try {
+        const selfieSegmenter = await createSegmenter(vision, this.selfieModelUrl);
+        this.selfieSegmenter = {
+          segmenter: selfieSegmenter,
+          kind: 'selfie',
+          labels: selfieSegmenter.getLabels()
+        };
+      } catch (error) {
+        console.warn('Selfie segmentation model failed to initialize.', error);
       }
     }
 
-    this.labels = this.segmenter.getLabels();
+    if (!this.subjectSegmenter) {
+      try {
+        const subjectSegmenter = await createSegmenter(vision, SUBJECT_MODEL_URL);
+        this.subjectSegmenter = {
+          segmenter: subjectSegmenter,
+          kind: 'subject',
+          labels: subjectSegmenter.getLabels()
+        };
+      } catch (error) {
+        console.warn('Subject segmentation model failed to initialize. Falling back to selfie-only mode.', error);
+      }
+    }
+
+    if (!this.selfieSegmenter && !this.subjectSegmenter) {
+      throw new Error('Unable to initialize any segmentation model.');
+    }
+
+    this.frameIndex = 0;
+    this.cachedSubjectBranch = null;
+  }
+
+  private segmentBranch(slot: SegmenterSlot, frame: ImageBitmap, timestampMs: number, ageMs = 0): SegmentationBranchResult {
+    const result = slot.segmenter.segmentForVideo(frame, timestampMs);
+
+    let categoryMask = extractCategoryMask(result.categoryMask);
+    const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, slot.labels);
+    if (derivedMask && (!categoryMask || foregroundRatio(categoryMask) < 0.001)) {
+      categoryMask = derivedMask;
+    }
+    const confidenceMask = extractForegroundConfidenceMask(result.confidenceMasks);
+
+    if (!categoryMask || !(categoryMask instanceof Uint8Array)) {
+      throw new Error('MediaPipe failed to return a category mask.');
+    }
+
+    const branch = createBranchResult(slot.kind, frame, categoryMask, confidenceMask, slot.labels, ageMs);
+
+    result.categoryMask?.close();
+    result.confidenceMasks?.forEach((mask) => mask.close());
+
+    return branch;
   }
 
   async segment(frame: ImageBitmap, timestampMs: number): Promise<SegmentationFrameResult> {
-    if (!this.segmenter) await this.initialize();
-
-    const result = this.segmenter!.segmentForVideo(frame, timestampMs);
-
-    let categoryMask = extractCategoryMask(result.categoryMask);
-    const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, this.labels);
-    if (derivedMask && (!categoryMask || foregroundRatio(categoryMask) < 0.01)) {
-      categoryMask = derivedMask;
-    }
-    const confidenceMaskRaw = extractForegroundConfidenceMask(result.confidenceMasks);
-
-    if (!categoryMask || !(categoryMask instanceof Uint8Array)) {
-      throw new Error('MediaPipe failed to return category mask');
+    if (!this.selfieSegmenter && !this.subjectSegmenter) {
+      await this.initialize(frame.width, frame.height);
     }
 
-    if (this.labels.length && categoryMask && foregroundRatio(categoryMask) < 0.001) {
-      console.warn('MediaPipe category mask stayed empty after fallback. Labels:', this.labels);
+    if (!this.selfieSegmenter && !this.subjectSegmenter) {
+      throw new Error('Segmentation models are not initialized.');
     }
 
-    const output: SegmentationFrameResult = {
-      width: frame.width,   // force exact input resolution (super-perfect alignment)
+    const branches: SegmentationBranchResult[] = [];
+
+    if (this.selfieSegmenter) {
+      branches.push(this.segmentBranch(this.selfieSegmenter, frame, timestampMs, 0));
+    }
+
+    let subjectBranch: CachedBranch | null = this.cachedSubjectBranch;
+    if (this.subjectSegmenter) {
+      const shouldRefreshSubject =
+        !this.cachedSubjectBranch ||
+        this.frameIndex % SUBJECT_UPDATE_INTERVAL_FRAMES === 0 ||
+        (timestampMs - this.cachedSubjectBranch.updatedAtMs) > SUBJECT_MAX_CACHE_AGE_MS;
+
+      if (shouldRefreshSubject) {
+        const nextSubject = this.segmentBranch(this.subjectSegmenter, frame, timestampMs, 0);
+        subjectBranch = {
+          ...nextSubject,
+          updatedAtMs: timestampMs
+        };
+        this.cachedSubjectBranch = subjectBranch;
+      }
+    }
+
+    this.frameIndex += 1;
+
+    if (subjectBranch) {
+      branches.push({
+        ...subjectBranch,
+        ageMs: Math.max(0, timestampMs - subjectBranch.updatedAtMs)
+      });
+    }
+
+    if (!branches.length) {
+      throw new Error('No segmentation branches are available.');
+    }
+
+    return {
+      width: frame.width,
       height: frame.height,
-      categoryMask,
-      confidenceMask: confidenceMaskRaw instanceof Float32Array ? confidenceMaskRaw : undefined,
-      labels: this.labels
+      branches
     };
-
-    // Clean up MediaPipe internal masks immediately
-    result.categoryMask?.close();
-    result.confidenceMasks?.forEach(m => m.close());
-
-    return output;
   }
 
   close() {
-    this.segmenter?.close();
-    this.segmenter = null;
-    this.labels = [];
+    this.selfieSegmenter?.segmenter.close();
+    this.subjectSegmenter?.segmenter.close();
+    this.selfieSegmenter = null;
+    this.subjectSegmenter = null;
+    this.cachedSubjectBranch = null;
+    this.frameIndex = 0;
   }
 }

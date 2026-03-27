@@ -211,7 +211,7 @@ async function handleInit(message: InitMessage) {
   sourceHeight = message.height;
   renderer.setBackground(message.background);
   segmenter = new SegmentationManager();
-  await segmenter.initialize();
+  await segmenter.initialize(message.width, message.height);
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
   currentBackground = message.background;
