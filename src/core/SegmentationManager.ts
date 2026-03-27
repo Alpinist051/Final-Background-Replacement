@@ -20,11 +20,9 @@ if (typeof importFallbackHost.import !== 'function') {
 }
 
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
-const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
-const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite';
-const SUBJECT_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/latest/deeplab_v3.tflite';
-const SUBJECT_UPDATE_INTERVAL_FRAMES = 2;
-const SUBJECT_MAX_CACHE_AGE_MS = 120;
+const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
+const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite';
+const SUBJECT_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite';
 
 type SegmenterSlot = {
   segmenter: ImageSegmenter;
@@ -34,6 +32,11 @@ type SegmenterSlot = {
 
 type CachedBranch = SegmentationBranchResult & {
   updatedAtMs: number;
+};
+
+export type SegmentOptions = {
+  refreshSubject?: boolean;
+  subjectFrame?: ImageBitmap;
 };
 
 function extractCategoryMask(mask: MPMask | undefined): Uint8Array | undefined {
@@ -125,6 +128,38 @@ function foregroundRatio(categoryMask: Uint8Array) {
   return count / Math.max(1, categoryMask.length);
 }
 
+function resampleCategoryMask(source: Uint8Array, sourceWidth: number, sourceHeight: number, targetWidth: number, targetHeight: number) {
+  if (sourceWidth === targetWidth && sourceHeight === targetHeight) return source;
+
+  const output = new Uint8Array(targetWidth * targetHeight);
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sourceY = Math.min(sourceHeight - 1, Math.floor((y + 0.5) * sourceHeight / targetHeight));
+    const sourceRow = sourceY * sourceWidth;
+    const targetRow = y * targetWidth;
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sourceX = Math.min(sourceWidth - 1, Math.floor((x + 0.5) * sourceWidth / targetWidth));
+      output[targetRow + x] = source[sourceRow + sourceX] ?? 0;
+    }
+  }
+  return output;
+}
+
+function resampleConfidenceMask(source: Float32Array, sourceWidth: number, sourceHeight: number, targetWidth: number, targetHeight: number) {
+  if (sourceWidth === targetWidth && sourceHeight === targetHeight) return source;
+
+  const output = new Float32Array(targetWidth * targetHeight);
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sourceY = Math.min(sourceHeight - 1, Math.floor((y + 0.5) * sourceHeight / targetHeight));
+    const sourceRow = sourceY * sourceWidth;
+    const targetRow = y * targetWidth;
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sourceX = Math.min(sourceWidth - 1, Math.floor((x + 0.5) * sourceWidth / targetWidth));
+      output[targetRow + x] = source[sourceRow + sourceX] ?? 0;
+    }
+  }
+  return output;
+}
+
 function chooseSelfieModelUrl(width: number, height: number) {
   return width >= height ? SELFIE_MODEL_LANDSCAPE_URL : SELFIE_MODEL_SQUARE_URL;
 }
@@ -156,7 +191,8 @@ async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver
 
 function createBranchResult(
   kind: SegmentationBranchKind,
-  frame: ImageBitmap,
+  width: number,
+  height: number,
   categoryMask: Uint8Array,
   confidenceMask: Float32Array | undefined,
   labels: string[],
@@ -164,8 +200,8 @@ function createBranchResult(
 ): SegmentationBranchResult {
   return {
     kind,
-    width: frame.width,
-    height: frame.height,
+    width,
+    height,
     categoryMask,
     confidenceMask,
     labels,
@@ -177,7 +213,6 @@ export class SegmentationManager {
   private selfieSegmenter: SegmenterSlot | null = null;
   private subjectSegmenter: SegmenterSlot | null = null;
   private selfieModelUrl: string = SELFIE_MODEL_LANDSCAPE_URL;
-  private frameIndex = 0;
   private cachedSubjectBranch: CachedBranch | null = null;
 
   async initialize(sourceWidth = 1280, sourceHeight = 720): Promise<void> {
@@ -217,12 +252,20 @@ export class SegmentationManager {
       throw new Error('Unable to initialize any segmentation model.');
     }
 
-    this.frameIndex = 0;
     this.cachedSubjectBranch = null;
   }
 
-  private segmentBranch(slot: SegmenterSlot, frame: ImageBitmap, timestampMs: number, ageMs = 0): SegmentationBranchResult {
+  private segmentBranch(
+    slot: SegmenterSlot,
+    frame: ImageBitmap,
+    timestampMs: number,
+    ageMs = 0,
+    outputWidth = frame.width,
+    outputHeight = frame.height
+  ): SegmentationBranchResult {
     const result = slot.segmenter.segmentForVideo(frame, timestampMs);
+    const sourceWidth = frame.width;
+    const sourceHeight = frame.height;
 
     let categoryMask = extractCategoryMask(result.categoryMask);
     const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, slot.labels);
@@ -235,7 +278,12 @@ export class SegmentationManager {
       throw new Error('MediaPipe failed to return a category mask.');
     }
 
-    const branch = createBranchResult(slot.kind, frame, categoryMask, confidenceMask, slot.labels, ageMs);
+    const resizedCategoryMask = resampleCategoryMask(categoryMask, sourceWidth, sourceHeight, outputWidth, outputHeight);
+    const resizedConfidenceMask = confidenceMask
+      ? resampleConfidenceMask(confidenceMask, sourceWidth, sourceHeight, outputWidth, outputHeight)
+      : undefined;
+
+    const branch = createBranchResult(slot.kind, outputWidth, outputHeight, resizedCategoryMask, resizedConfidenceMask, slot.labels, ageMs);
 
     result.categoryMask?.close();
     result.confidenceMasks?.forEach((mask) => mask.close());
@@ -243,7 +291,7 @@ export class SegmentationManager {
     return branch;
   }
 
-  async segment(frame: ImageBitmap, timestampMs: number): Promise<SegmentationFrameResult> {
+  async segment(frame: ImageBitmap, timestampMs: number, options: SegmentOptions = {}): Promise<SegmentationFrameResult> {
     if (!this.selfieSegmenter && !this.subjectSegmenter) {
       await this.initialize(frame.width, frame.height);
     }
@@ -255,27 +303,27 @@ export class SegmentationManager {
     const branches: SegmentationBranchResult[] = [];
 
     if (this.selfieSegmenter) {
-      branches.push(this.segmentBranch(this.selfieSegmenter, frame, timestampMs, 0));
+      try {
+        branches.push(this.segmentBranch(this.selfieSegmenter, frame, timestampMs, 0));
+      } catch (error) {
+        console.warn('Selfie segmentation frame failed.', error);
+      }
     }
 
     let subjectBranch: CachedBranch | null = this.cachedSubjectBranch;
-    if (this.subjectSegmenter) {
-      const shouldRefreshSubject =
-        !this.cachedSubjectBranch ||
-        this.frameIndex % SUBJECT_UPDATE_INTERVAL_FRAMES === 0 ||
-        (timestampMs - this.cachedSubjectBranch.updatedAtMs) > SUBJECT_MAX_CACHE_AGE_MS;
-
-      if (shouldRefreshSubject) {
-        const nextSubject = this.segmentBranch(this.subjectSegmenter, frame, timestampMs, 0);
+    if (this.subjectSegmenter && options.refreshSubject) {
+      const subjectSource = options.subjectFrame ?? frame;
+      try {
+        const nextSubject = this.segmentBranch(this.subjectSegmenter, subjectSource, timestampMs, 0, frame.width, frame.height);
         subjectBranch = {
           ...nextSubject,
           updatedAtMs: timestampMs
         };
         this.cachedSubjectBranch = subjectBranch;
+      } catch (error) {
+        console.warn('Subject segmentation frame failed. Reusing the cached subject branch when available.', error);
       }
     }
-
-    this.frameIndex += 1;
 
     if (subjectBranch) {
       branches.push({
@@ -301,6 +349,9 @@ export class SegmentationManager {
     this.selfieSegmenter = null;
     this.subjectSegmenter = null;
     this.cachedSubjectBranch = null;
-    this.frameIndex = 0;
+  }
+
+  resetCache() {
+    this.cachedSubjectBranch = null;
   }
 }

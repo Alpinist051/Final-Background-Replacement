@@ -46,6 +46,9 @@ let maskProcessor: MaskProcessor | null = null;
 let analysisCanvas: ReturnType<typeof createAnalysisCanvas> | null = null;
 let processingCanvas: OffscreenCanvas | null = null;
 let processingContext: OffscreenCanvasRenderingContext2D | null = null;
+let subjectCanvas: OffscreenCanvas | null = null;
+let subjectContext: OffscreenCanvasRenderingContext2D | null = null;
+let subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
 
 type QualityTier = {
   maxWidth: number;
@@ -58,6 +61,9 @@ const QUALITY_TIERS: QualityTier[] = [
   { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.82 },
   { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.9 }
 ];
+
+const SUBJECT_MAX_WIDTH = 320;
+const SUBJECT_MAX_HEIGHT = 320;
 
 let currentTuning: VirtualBackgroundTuning = {
   temporalAlpha: 0.76,
@@ -108,6 +114,9 @@ function updateProcessingResolution(tierIndex: number, announce = false) {
   processingHeight = fit.height;
   currentTuning = { ...currentTuning, temporalAlpha: tier.temporalAlpha };
   renderer?.resize(processingWidth, processingHeight);
+  segmenter?.resetCache();
+  maskProcessor?.reset();
+  subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
   if (announce) {
     postMessage({
       type: 'quality',
@@ -133,6 +142,13 @@ function ensureProcessingCanvas() {
   }
 }
 
+function ensureSubjectCanvas(width: number, height: number) {
+  if (!subjectCanvas || subjectCanvas.width !== width || subjectCanvas.height !== height) {
+    subjectCanvas = new OffscreenCanvas(width, height);
+    subjectContext = subjectCanvas.getContext('2d', { willReadFrequently: true });
+  }
+}
+
 async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
   if (!processingCanvas || !processingContext) return bitmap;
@@ -141,6 +157,31 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
   processingContext.setTransform(1, 0, 0, 1, 0, 0);
   return createImageBitmap(processingCanvas);
+}
+
+async function drawForSubjectProcessing(bitmap: ImageBitmap) {
+  const fit = fitWithinBounds(bitmap.width, bitmap.height, SUBJECT_MAX_WIDTH, SUBJECT_MAX_HEIGHT);
+  ensureSubjectCanvas(fit.width, fit.height);
+  if (!subjectCanvas || !subjectContext) return null;
+
+  subjectContext.clearRect(0, 0, subjectCanvas.width, subjectCanvas.height);
+  subjectContext.setTransform(-1, 0, 0, -1, subjectCanvas.width, subjectCanvas.height);
+  subjectContext.drawImage(bitmap, 0, 0, subjectCanvas.width, subjectCanvas.height);
+  subjectContext.setTransform(1, 0, 0, 1, 0, 0);
+  return createImageBitmap(subjectCanvas);
+}
+
+function chooseSubjectRefreshInterval(motion: number, fps: number, segmentationMs: number) {
+  if (motion > 0.22) {
+    return fps < 20 || segmentationMs > 70 ? 2 : 1;
+  }
+  if (motion > 0.12) {
+    return fps < 22 || segmentationMs > 60 ? 3 : 2;
+  }
+  if (fps < 24 || segmentationMs > 60) {
+    return 4;
+  }
+  return 3;
 }
 
 function computeLuma(bitmap: ImageBitmap) {
@@ -154,7 +195,7 @@ function computeLuma(bitmap: ImageBitmap) {
   const current = new Float32Array(canvas.width * canvas.height);
   let brightness = 0;
 
-  for (let i = 0; i < current.length; i++) {
+  for (let i = 0; i < current.length; i += 1) {
     const index = i * 4;
     const value = (data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114) / 255;
     current[i] = value;
@@ -165,7 +206,7 @@ function computeLuma(bitmap: ImageBitmap) {
   let motion = 0;
   if (previousLuma && previousLuma.length === current.length) {
     let delta = 0;
-    for (let i = 0; i < current.length; i++) delta += Math.abs(current[i] - previousLuma[i]);
+    for (let i = 0; i < current.length; i += 1) delta += Math.abs(current[i] - previousLuma[i]);
     motion = delta / current.length;
   }
   previousLuma = current;
@@ -189,19 +230,24 @@ function boostTuning(brightness: number, motion: number, processedMask: Processe
 
 function applyQualityFallback(fps: number, segmentationMs: number) {
   if (fps < LOW_FPS_THRESHOLD || segmentationMs > 70) {
-    lowFpsStreak += 1; highFpsStreak = 0;
+    lowFpsStreak += 1;
+    highFpsStreak = 0;
   } else if (fps > 33 && segmentationMs < 45) {
-    highFpsStreak += 1; lowFpsStreak = 0;
+    highFpsStreak += 1;
+    lowFpsStreak = 0;
   } else {
-    lowFpsStreak = 0; highFpsStreak = 0;
+    lowFpsStreak = 0;
+    highFpsStreak = 0;
   }
 
   if (lowFpsStreak >= LOW_FPS_FRAMES_BEFORE_DROP && qualityTierIndex < QUALITY_TIERS.length - 1) {
     updateProcessingResolution(qualityTierIndex + 1, true);
-    lowFpsStreak = 0; highFpsStreak = 0;
+    lowFpsStreak = 0;
+    highFpsStreak = 0;
   } else if (highFpsStreak >= HIGH_FPS_FRAMES_BEFORE_RAISE && qualityTierIndex > 0) {
     updateProcessingResolution(qualityTierIndex - 1, true);
-    lowFpsStreak = 0; highFpsStreak = 0;
+    lowFpsStreak = 0;
+    highFpsStreak = 0;
   }
 }
 
@@ -215,6 +261,7 @@ async function handleInit(message: InitMessage) {
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
   currentBackground = message.background;
+  subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
   updateProcessingResolution(0, false);
   scheduleTick();
   postMessage({ type: 'ready' });
@@ -242,12 +289,29 @@ async function processTick() {
 
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
+  const recentStats = performanceTracker.snapshot();
+  const subjectRefreshInterval = chooseSubjectRefreshInterval(motion, recentStats.fps || TARGET_FPS, recentStats.segmentationMs);
+  const refreshSubject = subjectFramesSinceRefresh === Number.POSITIVE_INFINITY || subjectFramesSinceRefresh >= subjectRefreshInterval;
+
+  let subjectBitmap: ImageBitmap | null = null;
+  if (refreshSubject) {
+    subjectBitmap = await drawForSubjectProcessing(processedBitmap);
+  }
+
   const segmentationStart = performance.now();
-  const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
+  let segmentation;
+  try {
+    segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart), {
+      refreshSubject,
+      subjectFrame: subjectBitmap ?? undefined
+    });
+  } finally {
+    subjectBitmap?.close();
+  }
   const segmentationMs = performance.now() - segmentationStart;
   const processedMask = maskProcessor.process(segmentation, currentTuning);
+  subjectFramesSinceRefresh = refreshSubject ? 0 : subjectFramesSinceRefresh + 1;
 
-  // ← UPDATED: pass processedMask
   const tuning = boostTuning(brightness, motion, processedMask);
 
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
@@ -287,9 +351,10 @@ async function processTick() {
     confidenceMean: processedMask.confidenceMean
   });
 
-  applyQualityFallback(fps, segmentationMs);
+  const averagedStats = performanceTracker.snapshot();
+  applyQualityFallback(fps, averagedStats.segmentationMs);
 
-  postMessage({ type: 'stats', stats: performanceTracker.snapshot() satisfies EngineStats });
+  postMessage({ type: 'stats', stats: averagedStats satisfies EngineStats });
 
   if (processedBitmap !== sourceFrame) processedBitmap.close();
   sourceFrame.close();
@@ -315,6 +380,8 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   if (message.type === 'resize') {
     sourceWidth = message.width;
     sourceHeight = message.height;
+    segmenter?.resetCache();
+    subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
     updateProcessingResolution(qualityTierIndex, false);
     return;
   }
@@ -331,7 +398,12 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     segmenter?.close();
     maskProcessor?.reset();
     renderer?.destroy();
-    renderer = null; segmenter = null; maskProcessor = null;
+    renderer = null;
+    segmenter = null;
+    maskProcessor = null;
     previousLuma = null;
+    subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
+    subjectCanvas = null;
+    subjectContext = null;
   }
 };
