@@ -57,12 +57,18 @@ function branchBoost(kind: SegmentationFrameResult['branches'][number]['kind']) 
 }
 
 function preserveFactor(kind: number) {
-  return kind === 1 ? 0.84 : kind === 2 ? 0.76 : 0.72;
+  return kind === 1 ? 0.7 : kind === 2 ? 0.62 : 0.58;
 }
 
-function isForegroundCategory(kind: SegmentationFrameResult['branches'][number]['kind'], categoryIndex: number, label: string) {
+function isForegroundCategory(
+  kind: SegmentationFrameResult['branches'][number]['kind'],
+  categoryIndex: number,
+  label: string,
+  allowHumanForeground: boolean
+) {
   if (categoryIndex === 0) return false;
   if (kind === 'selfie') return true;
+  if (allowHumanForeground) return !isBackgroundLabel(label);
   return !label || isSubjectLabel(label);
 }
 
@@ -81,9 +87,11 @@ export class MaskProcessor {
     return this.classWeights;
   }
 
-  process(result: SegmentationFrameResult, tuning: VirtualBackgroundTuning): ProcessedMask {
+  process(result: SegmentationFrameResult, tuning: VirtualBackgroundTuning, liveMotion = 0): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
+    const motionFactor = clamp01(liveMotion * 3.5);
+    const hasSelfieBranch = branches.some((branch) => branch.kind === 'selfie');
 
     const rawAlpha = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount);
@@ -93,22 +101,29 @@ export class MaskProcessor {
     for (const branch of branches) {
       const classWeights = this.getClassWeights(branch.kind, branch.labels);
       const kindBoost = branchBoost(branch.kind);
-      const ageFactor = branch.kind === 'subject' ? Math.max(0.6, 1 - branch.ageMs / 480) : 1;
+      const allowHumanForeground = branch.kind === 'subject' && !hasSelfieBranch;
+      const ageLimit = branch.kind === 'subject'
+        ? (motionFactor > 0.45 ? 180 : motionFactor > 0.2 ? 260 : 480)
+        : 0;
+      const ageFloor = branch.kind === 'subject'
+        ? (motionFactor > 0.45 ? 0.3 : motionFactor > 0.2 ? 0.45 : 0.6)
+        : 1;
+      const ageFactor = branch.kind === 'subject' ? Math.max(ageFloor, 1 - branch.ageMs / ageLimit) : 1;
       const sourceConfidence = branch.confidenceMask;
 
       for (let i = 0; i < pixelCount; i += 1) {
         const categoryIndex = branch.categoryMask[i] ?? 0;
         const label = branch.labels[categoryIndex] ?? '';
-        if (!isForegroundCategory(branch.kind, categoryIndex, label)) continue;
+        if (!isForegroundCategory(branch.kind, categoryIndex, label, allowHumanForeground)) continue;
 
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i]) : 1;
         const classWeight = classWeights[categoryIndex] ?? 1;
         let alpha = confidence * classWeight * kindBoost * ageFactor * tuningBoost;
 
         if (branch.kind === 'selfie') {
-          alpha = Math.max(alpha, 0.88);
+          alpha = Math.max(alpha, confidence > 0.6 ? 0.98 : 0.92);
         } else if (isStrongSubjectLabel(label)) {
-          alpha = Math.max(alpha, 0.84);
+          alpha = Math.max(alpha, confidence > 0.7 ? 0.88 : 0.8);
         }
 
         alpha = clamp01(alpha);
@@ -129,6 +144,7 @@ export class MaskProcessor {
     let foregroundPixels = 0;
     let alphaSum = 0;
     let confidenceSum = 0;
+    const useTemporalCarry = motionFactor < 0.1;
 
     for (let i = 0; i < pixelCount; i += 1) {
       const currentAlpha = rawAlpha[i];
@@ -136,11 +152,11 @@ export class MaskProcessor {
       const previousType = previousDominantTypes?.[i] ?? dominantTypes[i];
 
       let alpha = currentAlpha;
-      if (previousAlpha > 0 && currentAlpha < previousAlpha) {
+      if (useTemporalCarry && previousAlpha > 0 && currentAlpha < previousAlpha) {
         alpha = Math.max(currentAlpha, previousAlpha * preserveFactor(previousType));
       }
 
-      if (alpha > 0.06 && currentAlpha === 0 && previousAlpha > 0.08) {
+      if (useTemporalCarry && alpha > 0.06 && currentAlpha === 0 && previousAlpha > 0.08) {
         alpha = previousAlpha * 0.5;
       }
 

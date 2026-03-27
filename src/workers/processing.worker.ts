@@ -156,11 +156,15 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   return createImageBitmap(processingCanvas);
 }
 
-function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segmentationMs: number) {
+function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segmentationMs: number, motion: number) {
   if (qualityTier >= 2) {
     return fps < 20 || segmentationMs > 80
       ? { maxWidth: 224, maxHeight: 224 }
       : { maxWidth: 256, maxHeight: 256 };
+  }
+
+  if (motion > 0.08 && fps > 30 && segmentationMs < 45) {
+    return { maxWidth: 384, maxHeight: 384 };
   }
 
   if (fps > 42 && segmentationMs < 35) {
@@ -188,22 +192,20 @@ async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, m
 
 function chooseSubjectRefreshInterval(motion: number, fps: number, segmentationMs: number, qualityTier: number) {
   const overloaded = fps < 24 || segmentationMs > 60 || qualityTier >= 2;
-  const veryOverloaded = fps < 18 || segmentationMs > 80;
-  const comfortable = fps > 42 && segmentationMs < 35 && qualityTier === 0;
 
-  if (motion > 0.22) {
-    return veryOverloaded ? 2 : overloaded ? 2 : 1;
+  if (motion > 0.08) {
+    return overloaded ? 2 : 1;
   }
 
-  if (motion > 0.12) {
-    return overloaded ? 4 : comfortable ? 2 : 3;
+  if (motion > 0.04) {
+    return overloaded ? 3 : 2;
   }
 
   if (overloaded) {
     return qualityTier >= 2 ? 5 : 4;
   }
 
-  return comfortable ? 3 : 4;
+  return 3;
 }
 
 function computeLuma(bitmap: ImageBitmap) {
@@ -237,16 +239,17 @@ function computeLuma(bitmap: ImageBitmap) {
 
 function boostTuning(brightness: number, motion: number, processedMask: ProcessedMask) {
   const boosted = { ...currentTuning };
+  const motionIntensity = Math.min(1, Math.max(0, Math.max(motion, processedMask.motionMagnitude) * 3.25));
 
-  if (motion > 0.25 || processedMask.motionMagnitude > 0.18) {
-    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.65) * boosted.motionBoost;
+  if (motionIntensity > 0.7 || processedMask.motionMagnitude > 0.2) {
+    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.55);
   }
   if (brightness < 80) {
     boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.35);
   }
   boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
-  boosted.temporalAlpha = Math.min(0.92, Math.max(0.55, boosted.temporalAlpha));
-  boosted.motionBoost = currentTuning.motionBoost;
+  boosted.temporalAlpha = Math.min(0.92, Math.max(0.45, boosted.temporalAlpha - motionIntensity * 0.25));
+  boosted.motionBoost = motionIntensity;
   return boosted;
 }
 
@@ -313,7 +316,7 @@ async function processTick() {
   const { brightness, motion } = computeLuma(processedBitmap);
   const recentStats = performanceTracker.snapshot();
   const subjectRefreshInterval = chooseSubjectRefreshInterval(motion, recentStats.fps || TARGET_FPS, recentStats.segmentationMs, qualityTierIndex);
-  const subjectBounds = chooseSubjectProcessingBounds(qualityTierIndex, recentStats.fps || TARGET_FPS, recentStats.segmentationMs);
+  const subjectBounds = chooseSubjectProcessingBounds(qualityTierIndex, recentStats.fps || TARGET_FPS, recentStats.segmentationMs, motion);
   const refreshSubject = subjectFramesSinceRefresh === Number.POSITIVE_INFINITY || subjectFramesSinceRefresh >= subjectRefreshInterval;
 
   let subjectBitmap: ImageBitmap | null = null;
@@ -332,7 +335,7 @@ async function processTick() {
     subjectBitmap?.close();
   }
   const segmentationMs = performance.now() - segmentationStart;
-  const processedMask = maskProcessor.process(segmentation, currentTuning);
+  const processedMask = maskProcessor.process(segmentation, currentTuning, motion);
   subjectFramesSinceRefresh = refreshSubject ? 0 : subjectFramesSinceRefresh + 1;
 
   const tuning = boostTuning(brightness, motion, processedMask);
