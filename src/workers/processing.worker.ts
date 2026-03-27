@@ -150,7 +150,7 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
   if (!processingCanvas || !processingContext) return bitmap;
   processingContext.clearRect(0, 0, processingCanvas.width, processingCanvas.height);
-  processingContext.setTransform(-1, 0, 0, -1, processingCanvas.width, processingCanvas.height);
+  processingContext.setTransform(1, 0, 0, -1, 0, processingCanvas.height);
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
   processingContext.setTransform(1, 0, 0, 1, 0, 0);
   return createImageBitmap(processingCanvas);
@@ -184,7 +184,7 @@ async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, m
   if (!subjectCanvas || !subjectContext) return null;
 
   subjectContext.clearRect(0, 0, subjectCanvas.width, subjectCanvas.height);
-  subjectContext.setTransform(-1, 0, 0, -1, subjectCanvas.width, subjectCanvas.height);
+  subjectContext.setTransform(1, 0, 0, -1, 0, subjectCanvas.height);
   subjectContext.drawImage(bitmap, 0, 0, subjectCanvas.width, subjectCanvas.height);
   return createImageBitmap(subjectCanvas);
 }
