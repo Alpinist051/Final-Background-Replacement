@@ -62,9 +62,6 @@ const QUALITY_TIERS: QualityTier[] = [
   { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.9 }
 ];
 
-const SUBJECT_MAX_WIDTH = 320;
-const SUBJECT_MAX_HEIGHT = 320;
-
 let currentTuning: VirtualBackgroundTuning = {
   temporalAlpha: 0.76,
   bilateralSigmaSpatial: 4,
@@ -159,8 +156,26 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   return createImageBitmap(processingCanvas);
 }
 
-async function drawForSubjectProcessing(bitmap: ImageBitmap) {
-  const fit = fitWithinBounds(bitmap.width, bitmap.height, SUBJECT_MAX_WIDTH, SUBJECT_MAX_HEIGHT);
+function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segmentationMs: number) {
+  if (qualityTier >= 2) {
+    return fps < 20 || segmentationMs > 80
+      ? { maxWidth: 224, maxHeight: 224 }
+      : { maxWidth: 256, maxHeight: 256 };
+  }
+
+  if (fps > 42 && segmentationMs < 35) {
+    return { maxWidth: 384, maxHeight: 384 };
+  }
+
+  if (fps < 24 || segmentationMs > 60) {
+    return { maxWidth: 256, maxHeight: 256 };
+  }
+
+  return { maxWidth: 320, maxHeight: 320 };
+}
+
+async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, maxHeight: number) {
+  const fit = fitWithinBounds(bitmap.width, bitmap.height, maxWidth, maxHeight);
   ensureSubjectCanvas(fit.width, fit.height);
   if (!subjectCanvas || !subjectContext) return null;
 
@@ -171,17 +186,24 @@ async function drawForSubjectProcessing(bitmap: ImageBitmap) {
   return createImageBitmap(subjectCanvas);
 }
 
-function chooseSubjectRefreshInterval(motion: number, fps: number, segmentationMs: number) {
+function chooseSubjectRefreshInterval(motion: number, fps: number, segmentationMs: number, qualityTier: number) {
+  const overloaded = fps < 24 || segmentationMs > 60 || qualityTier >= 2;
+  const veryOverloaded = fps < 18 || segmentationMs > 80;
+  const comfortable = fps > 42 && segmentationMs < 35 && qualityTier === 0;
+
   if (motion > 0.22) {
-    return fps < 20 || segmentationMs > 70 ? 2 : 1;
+    return veryOverloaded ? 2 : overloaded ? 2 : 1;
   }
+
   if (motion > 0.12) {
-    return fps < 22 || segmentationMs > 60 ? 3 : 2;
+    return overloaded ? 4 : comfortable ? 2 : 3;
   }
-  if (fps < 24 || segmentationMs > 60) {
-    return 4;
+
+  if (overloaded) {
+    return qualityTier >= 2 ? 5 : 4;
   }
-  return 3;
+
+  return comfortable ? 3 : 4;
 }
 
 function computeLuma(bitmap: ImageBitmap) {
@@ -290,12 +312,13 @@ async function processTick() {
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
   const recentStats = performanceTracker.snapshot();
-  const subjectRefreshInterval = chooseSubjectRefreshInterval(motion, recentStats.fps || TARGET_FPS, recentStats.segmentationMs);
+  const subjectRefreshInterval = chooseSubjectRefreshInterval(motion, recentStats.fps || TARGET_FPS, recentStats.segmentationMs, qualityTierIndex);
+  const subjectBounds = chooseSubjectProcessingBounds(qualityTierIndex, recentStats.fps || TARGET_FPS, recentStats.segmentationMs);
   const refreshSubject = subjectFramesSinceRefresh === Number.POSITIVE_INFINITY || subjectFramesSinceRefresh >= subjectRefreshInterval;
 
   let subjectBitmap: ImageBitmap | null = null;
   if (refreshSubject) {
-    subjectBitmap = await drawForSubjectProcessing(processedBitmap);
+    subjectBitmap = await drawForSubjectProcessing(processedBitmap, subjectBounds.maxWidth, subjectBounds.maxHeight);
   }
 
   const segmentationStart = performance.now();
