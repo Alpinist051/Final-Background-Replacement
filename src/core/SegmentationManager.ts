@@ -63,7 +63,11 @@ function findBackgroundIndex(labels: string[]) {
   return labels.findIndex((label) => /background/i.test(label));
 }
 
-function extractForegroundConfidenceMask(masks: MPMask[] | undefined, labels: string[]): Float32Array | undefined {
+function extractForegroundConfidenceMask(
+  masks: MPMask[] | undefined,
+  labels: string[],
+  categoryMask?: Uint8Array
+): Float32Array | undefined {
   if (!masks?.length) return undefined;
 
   const floatMasks = masks.map(extractMaskFloats);
@@ -74,7 +78,15 @@ function extractForegroundConfidenceMask(masks: MPMask[] | undefined, labels: st
 
   for (let i = 0; i < primary.length; i += 1) {
     let foregroundConfidence = 0;
-    if (floatMasks.length > 1) {
+    if (floatMasks.length > 1 && categoryMask) {
+      const selectedIndex = categoryMask[i] ?? 0;
+      const label = labels[selectedIndex] ?? '';
+      if (!/background/i.test(label)) {
+        foregroundConfidence = floatMasks[selectedIndex]?.[i] ?? 0;
+      }
+    }
+
+    if (!foregroundConfidence && floatMasks.length > 1) {
       for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
         const label = labels[maskIndex] ?? '';
         if (/background/i.test(label)) continue;
@@ -136,10 +148,11 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
   return output;
 }
 
-function foregroundRatio(categoryMask: Uint8Array) {
+function foregroundRatio(categoryMask: Uint8Array, labels: string[]) {
   let count = 0;
   for (let i = 0; i < categoryMask.length; i += 1) {
-    if (categoryMask[i] !== 0) count += 1;
+    const label = labels[categoryMask[i] ?? 0] ?? '';
+    if (label && !/background/i.test(label)) count += 1;
   }
   return count / Math.max(1, categoryMask.length);
 }
@@ -285,10 +298,10 @@ export class SegmentationManager {
 
     let categoryMask = extractCategoryMask(result.categoryMask);
     const derivedMask = buildCategoryMaskFromConfidenceMasks(result.confidenceMasks, slot.labels);
-    if (derivedMask && (!categoryMask || foregroundRatio(categoryMask) < 0.001)) {
+    if (derivedMask && (!categoryMask || foregroundRatio(categoryMask, slot.labels) < 0.001)) {
       categoryMask = derivedMask;
     }
-    const confidenceMask = extractForegroundConfidenceMask(result.confidenceMasks, slot.labels);
+    const confidenceMask = extractForegroundConfidenceMask(result.confidenceMasks, slot.labels, categoryMask);
 
     if (!categoryMask || !(categoryMask instanceof Uint8Array)) {
       throw new Error('MediaPipe failed to return a category mask.');

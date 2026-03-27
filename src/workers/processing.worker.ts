@@ -150,7 +150,7 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
   if (!processingCanvas || !processingContext) return bitmap;
   processingContext.clearRect(0, 0, processingCanvas.width, processingCanvas.height);
-  processingContext.setTransform(-1, 0, 0, -1, processingCanvas.width, processingCanvas.height);
+  processingContext.setTransform(-1, 0, 0, 1, processingCanvas.width, 0);
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
   processingContext.setTransform(1, 0, 0, 1, 0, 0);
   return createImageBitmap(processingCanvas);
@@ -184,9 +184,8 @@ async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, m
   if (!subjectCanvas || !subjectContext) return null;
 
   subjectContext.clearRect(0, 0, subjectCanvas.width, subjectCanvas.height);
-  subjectContext.setTransform(-1, 0, 0, -1, subjectCanvas.width, subjectCanvas.height);
-  subjectContext.drawImage(bitmap, 0, 0, subjectCanvas.width, subjectCanvas.height);
   subjectContext.setTransform(1, 0, 0, 1, 0, 0);
+  subjectContext.drawImage(bitmap, 0, 0, subjectCanvas.width, subjectCanvas.height);
   return createImageBitmap(subjectCanvas);
 }
 
@@ -248,8 +247,8 @@ function boostTuning(brightness: number, motion: number, processedMask: Processe
     boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.35);
   }
   boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
-  boosted.temporalAlpha = Math.min(0.92, Math.max(0.45, boosted.temporalAlpha - motionIntensity * 0.25));
-  boosted.motionBoost = motionIntensity;
+  boosted.temporalAlpha = Math.min(0.94, Math.max(0.74, boosted.temporalAlpha + motionIntensity * 0.04));
+  boosted.motionBoost = Math.max(0.22, Math.min(0.38, 0.32 - motionIntensity * 0.05));
   return boosted;
 }
 
