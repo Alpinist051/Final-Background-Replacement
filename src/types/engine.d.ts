@@ -20,7 +20,7 @@ export interface VideoBackground {
 
 export interface BlurBackground {
   mode: 'blur';
-  strength?: number; // optional – used only for UI
+  strength?: number; // optional - used only for UI
 }
 
 export type BackgroundSource = SolidBackground | ImageBackground | VideoBackground | BlurBackground;
@@ -65,7 +65,7 @@ export interface SegmentationFrameResult {
   branches: SegmentationBranchResult[];
 }
 
-export type SegmentationBranchKind = 'selfie';
+export type SegmentationBranchKind = 'human';
 
 export interface SegmentationBranchResult {
   kind: SegmentationBranchKind;
@@ -77,7 +77,6 @@ export interface SegmentationBranchResult {
   ageMs: number;
 }
 
-// Quality fallback message from worker
 export interface QualityUpdate {
   width: number;
   height: number;

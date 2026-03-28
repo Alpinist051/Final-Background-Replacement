@@ -5,7 +5,7 @@
         <p class="eyebrow">Browser-only background replacement</p>
         <h1>Virtual background engine</h1>
         <p class="lede">
-          MediaPipe segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
+          MediaPipe multi-person semantic segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
         </p>
       </div>
       <div class="hero-metrics">
@@ -28,17 +28,17 @@
       <div class="left-column">
         <OutputPreview label="Live output" @ready="attachCanvas" />
         <div class="control-grid">
-        <CameraInput
-          :devices="devices"
-          :device-id="deviceId"
-          :running="state.status === 'running'"
-          :error="state.error"
-          @update:deviceId="deviceId = $event"
-          @refresh="refreshDevices"
-          @start="start"
-          @stop="stop"
-        />
-        <BackgroundSelector v-model="background" />
+          <CameraInput
+            :devices="devices"
+            :device-id="deviceId"
+            :running="state.status === 'running'"
+            :error="state.error"
+            @update:deviceId="deviceId = $event"
+            @refresh="refreshDevices"
+            @start="start"
+            @stop="stop"
+          />
+          <BackgroundSelector v-model="background" />
         </div>
       </div>
 

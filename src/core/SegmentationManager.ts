@@ -7,6 +7,10 @@ import type {
   SegmentationBranchResult,
   SegmentationFrameResult
 } from '@/types/engine';
+import {
+  getBackgroundIndex,
+  getSemanticLabelPriority
+} from './segmentationLabels';
 
 type ImportFallbackHost = typeof globalThis & {
   import?: (specifier: string) => Promise<unknown>;
@@ -19,8 +23,7 @@ if (typeof importFallbackHost.import !== 'function') {
 }
 
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
-const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
-const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite';
+const MULTICLASS_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
 
 type SegmenterSlot = {
   segmenter: ImageSegmenter;
@@ -47,8 +50,8 @@ function extractMaskFloats(mask: MPMask): Float32Array {
     : Float32Array.from(mask.getAsUint8Array(), (value) => value / 255);
 }
 
-function findBackgroundIndex(labels: string[]) {
-  return labels.findIndex((label) => /background/i.test(label));
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
 }
 
 function extractForegroundConfidenceMask(
@@ -60,39 +63,41 @@ function extractForegroundConfidenceMask(
 
   const floatMasks = masks.map(extractMaskFloats);
   const primary = floatMasks[0];
-  const backgroundIndex = findBackgroundIndex(labels);
+  const backgroundIndex = getBackgroundIndex(labels);
   const output = new Float32Array(primary.length);
 
   for (let i = 0; i < primary.length; i += 1) {
-    let foregroundConfidence = 0;
+    const backgroundConfidence = backgroundIndex >= 0 ? (floatMasks[backgroundIndex][i] ?? 0) : 0;
+    let foregroundConfidence = backgroundIndex >= 0 ? 1 - backgroundConfidence : 0;
+
     if (categoryMask) {
       const selectedIndex = categoryMask[i] ?? 0;
       const label = labels[selectedIndex] ?? '';
-      if (!/background/i.test(label)) {
-        foregroundConfidence = floatMasks[selectedIndex]?.[i] ?? 0;
-      } else if (backgroundIndex >= 0) {
-        foregroundConfidence = 1 - (floatMasks[backgroundIndex][i] ?? 0);
+      if (selectedIndex !== backgroundIndex && label && !/background/i.test(label)) {
+        foregroundConfidence = Math.max(
+          foregroundConfidence,
+          (floatMasks[selectedIndex]?.[i] ?? 0) * getSemanticLabelPriority(label)
+        );
       }
+    }
+
+    for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
+      const label = labels[maskIndex] ?? '';
+      if (!label || /background/i.test(label)) continue;
+      const candidate = (floatMasks[maskIndex][i] ?? 0) * getSemanticLabelPriority(label);
+      foregroundConfidence = Math.max(foregroundConfidence, candidate);
     }
 
     if (!foregroundConfidence) {
       if (floatMasks.length === 1) {
         const singleLabel = labels[0] ?? '';
-        foregroundConfidence = /background/i.test(singleLabel)
-          ? 1 - primary[i]
-          : primary[i];
+        foregroundConfidence = /background/i.test(singleLabel) ? 1 - primary[i] : primary[i];
       } else if (backgroundIndex >= 0) {
         foregroundConfidence = 1 - (floatMasks[backgroundIndex][i] ?? 0);
-      } else {
-        for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
-          const label = labels[maskIndex] ?? '';
-          if (/background/i.test(label)) continue;
-          foregroundConfidence = Math.max(foregroundConfidence, floatMasks[maskIndex][i] ?? 0);
-        }
       }
     }
 
-    output[i] = Math.max(0, Math.min(1, foregroundConfidence));
+    output[i] = clamp01(foregroundConfidence);
   }
 
   return output;
@@ -104,20 +109,34 @@ function buildCategoryMaskFromConfidenceMasks(masks: MPMask[] | undefined, label
   const floatMasks = masks.map(extractMaskFloats);
   const length = floatMasks[0]?.length ?? 0;
   if (!length) return undefined;
-  const backgroundIndex = findBackgroundIndex(labels);
+  const backgroundIndex = getBackgroundIndex(labels);
 
   const output = new Uint8Array(length);
   for (let i = 0; i < length; i += 1) {
     let bestIndex = backgroundIndex >= 0 ? backgroundIndex : 0;
     let bestValue = -Infinity;
+    let bestForegroundIndex = bestIndex;
+    let bestForegroundValue = -Infinity;
+    const backgroundValue = backgroundIndex >= 0 ? (floatMasks[backgroundIndex][i] ?? 0) : 0;
+    const backgroundScore = backgroundValue * 0.92;
+
     for (let maskIndex = 0; maskIndex < floatMasks.length; maskIndex += 1) {
       const candidate = floatMasks[maskIndex][i] ?? 0;
-      if (candidate > bestValue) {
-        bestValue = candidate;
+      const label = labels[maskIndex] ?? '';
+      const priority = getSemanticLabelPriority(label);
+      const score = candidate * priority;
+      if (score > bestValue) {
+        bestValue = score;
         bestIndex = maskIndex;
       }
+      if (maskIndex !== backgroundIndex && score > bestForegroundValue) {
+        bestForegroundValue = score;
+        bestForegroundIndex = maskIndex;
+      }
     }
-    output[i] = bestValue >= 0.12 ? bestIndex : (backgroundIndex >= 0 ? backgroundIndex : 0);
+
+    const foregroundWins = bestForegroundIndex !== backgroundIndex && bestForegroundValue >= Math.max(0.08, backgroundScore - 0.02);
+    output[i] = foregroundWins ? bestForegroundIndex : bestIndex;
   }
 
   return output;
@@ -164,10 +183,8 @@ function resampleConfidenceMask(source: Float32Array, sourceWidth: number, sourc
   return output;
 }
 
-function chooseSelfieModelCandidates(width: number, height: number) {
-  const primaryFallback = width >= height ? SELFIE_MODEL_LANDSCAPE_URL : SELFIE_MODEL_SQUARE_URL;
-  const secondaryFallback = width >= height ? SELFIE_MODEL_SQUARE_URL : SELFIE_MODEL_LANDSCAPE_URL;
-  return [primaryFallback, secondaryFallback];
+function chooseMultiPersonModelCandidates() {
+  return [MULTICLASS_MODEL_URL];
 }
 
 async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>, modelAssetPath: string) {
@@ -178,6 +195,7 @@ async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver
         delegate: 'GPU' as const
       },
       runningMode: 'VIDEO',
+      displayNamesLocale: 'en',
       outputCategoryMask: true,
       outputConfidenceMasks: true
     });
@@ -189,6 +207,7 @@ async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver
         delegate: 'CPU' as const
       },
       runningMode: 'VIDEO',
+      displayNamesLocale: 'en',
       outputCategoryMask: true,
       outputConfidenceMasks: true
     });
@@ -204,7 +223,7 @@ function createBranchResult(
   ageMs: number
 ): SegmentationBranchResult {
   return {
-    kind: 'selfie',
+    kind: 'human',
     width,
     height,
     categoryMask,
@@ -215,32 +234,32 @@ function createBranchResult(
 }
 
 export class SegmentationManager {
-  private selfieSegmenter: SegmenterSlot | null = null;
+  private humanSegmenter: SegmenterSlot | null = null;
 
-  async initialize(sourceWidth = 1280, sourceHeight = 720): Promise<void> {
-    if (this.selfieSegmenter) return;
+  async initialize(_sourceWidth = 1280, _sourceHeight = 720): Promise<void> {
+    if (this.humanSegmenter) return;
 
     const vision = await FilesetResolver.forVisionTasks(VISION_WASM_URL);
 
-    const selfieModelCandidates = chooseSelfieModelCandidates(sourceWidth, sourceHeight);
+    const humanModelCandidates = chooseMultiPersonModelCandidates();
 
-    if (!this.selfieSegmenter) {
-      for (const modelAssetPath of selfieModelCandidates) {
+    if (!this.humanSegmenter) {
+      for (const modelAssetPath of humanModelCandidates) {
         try {
-          const selfieSegmenter = await createSegmenter(vision, modelAssetPath);
-          this.selfieSegmenter = {
-            segmenter: selfieSegmenter,
-            labels: selfieSegmenter.getLabels()
+          const humanSegmenter = await createSegmenter(vision, modelAssetPath);
+          this.humanSegmenter = {
+            segmenter: humanSegmenter,
+            labels: humanSegmenter.getLabels()
           };
           break;
         } catch (error) {
-          console.warn('Selfie segmentation model failed to initialize.', error);
+          console.warn('Multi-person segmentation model failed to initialize.', error);
         }
       }
     }
 
-    if (!this.selfieSegmenter) {
-      throw new Error('Unable to initialize the selfie segmentation model.');
+    if (!this.humanSegmenter) {
+      throw new Error('Unable to initialize the multi-person segmentation model.');
     }
   }
 
@@ -283,21 +302,21 @@ export class SegmentationManager {
   }
 
   async segment(frame: ImageBitmap, timestampMs: number): Promise<SegmentationFrameResult> {
-    if (!this.selfieSegmenter) {
+    if (!this.humanSegmenter) {
       await this.initialize(frame.width, frame.height);
     }
 
-    if (!this.selfieSegmenter) {
+    if (!this.humanSegmenter) {
       throw new Error('Segmentation model is not initialized.');
     }
 
     const branches: SegmentationBranchResult[] = [];
 
-    if (this.selfieSegmenter) {
+    if (this.humanSegmenter) {
       try {
-        branches.push(this.segmentBranch(this.selfieSegmenter, frame, timestampMs, 0));
+        branches.push(this.segmentBranch(this.humanSegmenter, frame, timestampMs, 0));
       } catch (error) {
-        console.warn('Selfie segmentation frame failed.', error);
+        console.warn('Multi-person segmentation frame failed.', error);
       }
     }
 
@@ -313,7 +332,7 @@ export class SegmentationManager {
   }
 
   close() {
-    this.selfieSegmenter?.segmenter.close();
-    this.selfieSegmenter = null;
+    this.humanSegmenter?.segmenter.close();
+    this.humanSegmenter = null;
   }
 }

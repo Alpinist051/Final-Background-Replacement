@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, reactive, shallowRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, shallowRef } from 'vue';
 import type { BackgroundSource, EngineState, VirtualBackgroundTuning } from '@/types/engine';
 import { BackgroundEngine } from '@/core/BackgroundEngine';
 

@@ -1,4 +1,4 @@
-import type { BackgroundMode, BackgroundSource, EngineStats, QualityUpdate, VirtualBackgroundTuning } from '@/types/engine';
+import type { BackgroundSource, EngineStats, QualityUpdate, VirtualBackgroundTuning } from '@/types/engine';
 import { loadImageBitmap } from '@/utils/canvasUtils';
 
 type EngineCallbacks = {
@@ -158,18 +158,12 @@ export class BackgroundEngine {
   }
 
   dispose() {
-    this.stop();
+    void this.stop();
     this.worker?.postMessage({ type: 'stop' });
     this.worker?.terminate();
     this.worker = null;
     this.processedStream = null;
     this.backgroundRevision += 1;
-  }
-
-  private resizeCanvas() {
-    if (this.canvasTransferred) return;
-    this.canvas.width = this.videoElement.videoWidth || 1280;
-    this.canvas.height = this.videoElement.videoHeight || 720;
   }
 
   private ensureWorker() {

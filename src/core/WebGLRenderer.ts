@@ -86,10 +86,13 @@ function uploadBitmap(gl: WebGL2RenderingContext, texture: WebGLTexture, bitmap:
 }
 
 function uploadMask(gl: WebGL2RenderingContext, texture: WebGLTexture, data: Float32Array | Uint8Array, width: number, height: number) {
-  const bytes =
-    data instanceof Uint8Array
-      ? data
-      : new Uint8Array(Array.from(data, (value) => Math.max(0, Math.min(255, Math.round(value * 255)))));
+  const bytes = data instanceof Uint8Array ? data : (() => {
+    const output = new Uint8Array(data.length);
+    for (let i = 0; i < data.length; i += 1) {
+      output[i] = Math.max(0, Math.min(255, Math.round(data[i] * 255)));
+    }
+    return output;
+  })();
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, width, height, 0, gl.RED, gl.UNSIGNED_BYTE, bytes);
 }

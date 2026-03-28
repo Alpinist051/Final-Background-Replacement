@@ -188,17 +188,17 @@ function computeLuma(bitmap: ImageBitmap) {
 function boostTuning(brightness: number, motion: number, processedMask: ProcessedMask) {
   const boosted = { ...currentTuning };
   const motionSignal = Math.max(motion, processedMask.motionMagnitude);
-  const motionIntensity = Math.min(1, Math.max(0, motionSignal * 4.5));
+  const motionIntensity = Math.min(1, Math.max(0, motionSignal * 3.2));
 
-  if (motionIntensity > 0.7 || processedMask.motionMagnitude > 0.2) {
-    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.45);
+  if (motionIntensity > 0.55 || processedMask.motionMagnitude > 0.18) {
+    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.38);
   }
   if (brightness < 80) {
     boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.25);
   }
-  boosted.confidenceBoost = Math.min(2.7, boosted.confidenceBoost);
-  boosted.temporalAlpha = Math.max(0.64, Math.min(0.9, boosted.temporalAlpha - motionIntensity * 0.12));
-  boosted.motionBoost = Math.max(0.25, Math.min(1, 0.28 + motionIntensity * 0.72));
+  boosted.confidenceBoost = Math.min(2.6, boosted.confidenceBoost);
+  boosted.temporalAlpha = Math.max(0.7, Math.min(0.93, boosted.temporalAlpha - motionIntensity * 0.06));
+  boosted.motionBoost = Math.max(0.35, Math.min(0.9, 0.42 + motionIntensity * 0.38));
   return boosted;
 }
 

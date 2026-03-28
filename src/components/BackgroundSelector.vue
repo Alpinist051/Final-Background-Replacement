@@ -58,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import type { BackgroundSource } from '@/types/engine';
 
 const props = defineProps<{
@@ -124,8 +124,17 @@ function handleFile(event: Event) {
   fileLabel.value = file.name;
   if (file.type.startsWith('video/')) {
     emit('update:modelValue', { mode: 'video', url: objectUrl, loop: true, label: file.name });
+    input.value = '';
     return;
   }
   emit('update:modelValue', { mode: 'image', url: objectUrl, label: file.name });
+  input.value = '';
 }
+
+onBeforeUnmount(() => {
+  if (objectUrl) {
+    URL.revokeObjectURL(objectUrl);
+    objectUrl = null;
+  }
+});
 </script>
