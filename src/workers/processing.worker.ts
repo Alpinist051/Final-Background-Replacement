@@ -229,8 +229,18 @@ function computeLuma(bitmap: ImageBitmap) {
   let motion = 0;
   if (previousLuma && previousLuma.length === current.length) {
     let delta = 0;
-    for (let i = 0; i < current.length; i += 1) delta += Math.abs(current[i] - previousLuma[i]);
-    motion = delta / current.length;
+    let peakDelta = 0;
+    let activePixels = 0;
+    for (let i = 0; i < current.length; i += 1) {
+      const diff = Math.abs(current[i] - previousLuma[i]);
+      delta += diff;
+      if (diff > peakDelta) peakDelta = diff;
+      if (diff > 0.035) activePixels += 1;
+    }
+    const meanDelta = delta / current.length;
+    const activeCoverage = activePixels / current.length;
+    // Localized motion matters more than global brightness drift for mask updates.
+    motion = Math.min(1, Math.max(meanDelta, peakDelta * 0.5, activeCoverage * 0.85));
   }
   previousLuma = current;
   return { brightness, motion };
@@ -238,17 +248,18 @@ function computeLuma(bitmap: ImageBitmap) {
 
 function boostTuning(brightness: number, motion: number, processedMask: ProcessedMask) {
   const boosted = { ...currentTuning };
-  const motionIntensity = Math.min(1, Math.max(0, Math.max(motion, processedMask.motionMagnitude) * 3.25));
+  const motionSignal = Math.max(motion, processedMask.motionMagnitude);
+  const motionIntensity = Math.min(1, Math.max(0, motionSignal * 4.5));
 
   if (motionIntensity > 0.7 || processedMask.motionMagnitude > 0.2) {
-    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.55);
+    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.45);
   }
   if (brightness < 80) {
-    boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.35);
+    boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.25);
   }
-  boosted.confidenceBoost = Math.min(2.8, boosted.confidenceBoost);
-  boosted.temporalAlpha = Math.min(0.94, Math.max(0.74, boosted.temporalAlpha + motionIntensity * 0.04));
-  boosted.motionBoost = Math.max(0.28, Math.min(0.62, 0.34 + motionIntensity * 0.22));
+  boosted.confidenceBoost = Math.min(2.7, boosted.confidenceBoost);
+  boosted.temporalAlpha = Math.max(0.64, Math.min(0.9, boosted.temporalAlpha - motionIntensity * 0.12));
+  boosted.motionBoost = Math.max(0.25, Math.min(1, 0.28 + motionIntensity * 0.72));
   return boosted;
 }
 

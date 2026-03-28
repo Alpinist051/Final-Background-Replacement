@@ -123,7 +123,7 @@ export class MaskProcessor {
   process(result: SegmentationFrameResult, tuning: VirtualBackgroundTuning, liveMotion = 0): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
-    const motionFactor = clamp01(liveMotion * 3.5);
+    const motionFactor = clamp01(liveMotion * 5.5);
     const hasSelfieBranch = branches.some((branch) => branch.kind === 'selfie');
     const orderedBranches = [
       ...branches.filter((branch) => branch.kind === 'selfie'),
@@ -140,10 +140,10 @@ export class MaskProcessor {
       const classProfile = this.getClassProfile(branch.kind, branch.labels);
       const kindBoost = branchBoost(branch.kind);
       const ageLimit = branch.kind === 'subject'
-        ? (motionFactor > 0.45 ? 140 : motionFactor > 0.2 ? 220 : 360)
+        ? (motionFactor > 0.55 ? 110 : motionFactor > 0.25 ? 170 : 260)
         : 0;
       const ageFloor = branch.kind === 'subject'
-        ? (motionFactor > 0.45 ? 0.2 : motionFactor > 0.2 ? 0.34 : 0.5)
+        ? (motionFactor > 0.55 ? 0.12 : motionFactor > 0.25 ? 0.26 : 0.42)
         : 1;
       const ageFactor = branch.kind === 'subject' ? Math.max(ageFloor, 1 - branch.ageMs / ageLimit) : 1;
       const sourceConfidence = branch.confidenceMask;
@@ -208,7 +208,7 @@ export class MaskProcessor {
       const allowSubjectHuman = !hasSelfieBranch
         || (selfieHalo?.[i] ?? 0) > 0
         || subjectHumanAlpha[i] >= 0.72
-        || previousAlpha >= 0.55;
+        || previousAlpha >= (motionFactor > 0.35 ? 0.45 : 0.55);
       if (allowSubjectHuman && subjectHumanAlpha[i] > currentAlpha) {
         currentAlpha = subjectHumanAlpha[i];
       }
@@ -216,16 +216,21 @@ export class MaskProcessor {
       let alpha = clamp01(currentAlpha);
       if (previousAlphaMask) {
         const stability = clamp01(confidenceMask[i] * 0.85 + (1 - motionFactor) * 0.2);
-        const riseBlend = 0.42 + stability * 0.28;
-        const fallBlend = 0.18 + stability * 0.3;
-        alpha = alpha >= previousAlpha
-          ? previousAlpha + (alpha - previousAlpha) * riseBlend
-          : previousAlpha + (alpha - previousAlpha) * fallBlend;
+        if (motionFactor > 0.35) {
+          const motionBlend = 0.82 + stability * 0.12;
+          alpha = previousAlpha + (alpha - previousAlpha) * motionBlend;
+        } else {
+          const riseBlend = 0.42 + stability * 0.28;
+          const fallBlend = 0.18 + stability * 0.3;
+          alpha = alpha >= previousAlpha
+            ? previousAlpha + (alpha - previousAlpha) * riseBlend
+            : previousAlpha + (alpha - previousAlpha) * fallBlend;
+        }
       }
       alpha = clamp01(alpha);
       nextAlphaMask[i] = alpha;
 
-      if (previousAlphaMask && Math.abs(alpha - previousAlpha) > 0.12) {
+      if (previousAlphaMask && (Math.abs(currentAlpha - previousAlpha) > 0.08 || Math.abs(alpha - previousAlpha) > 0.12)) {
         motionMagnitude += 1;
       }
       if (alpha > 0.12) foregroundPixels += 1;

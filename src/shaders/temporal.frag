@@ -16,7 +16,7 @@ void main() {
   float confidenceValue = clamp(texture(u_confidence, v_uv).r * u_confidenceBoost, 0.0, 1.0);
   float immediateMask = clamp(currentValue * confidenceValue, 0.0, 1.0);
   float motionFactor = clamp(u_motionBoost, 0.0, 1.0);
-  float hold = mix(u_alpha, 0.05, motionFactor);
+  float hold = mix(u_alpha, 0.0, motionFactor);
   float carry = prevValue * hold * mix(0.55, 1.0, confidenceValue);
   float temporalMask = max(immediateMask, carry);
   outColor = vec4(temporalMask, temporalMask, temporalMask, 1.0);
