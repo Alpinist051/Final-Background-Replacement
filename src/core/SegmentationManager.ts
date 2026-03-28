@@ -19,7 +19,6 @@ if (typeof importFallbackHost.import !== 'function') {
 }
 
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
-const SELFIE_MODEL_MULTICLASS_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite';
 const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
 const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite';
 
@@ -168,7 +167,7 @@ function resampleConfidenceMask(source: Float32Array, sourceWidth: number, sourc
 function chooseSelfieModelCandidates(width: number, height: number) {
   const primaryFallback = width >= height ? SELFIE_MODEL_LANDSCAPE_URL : SELFIE_MODEL_SQUARE_URL;
   const secondaryFallback = width >= height ? SELFIE_MODEL_SQUARE_URL : SELFIE_MODEL_LANDSCAPE_URL;
-  return [SELFIE_MODEL_MULTICLASS_URL, primaryFallback, secondaryFallback];
+  return [primaryFallback, secondaryFallback];
 }
 
 async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>, modelAssetPath: string) {
@@ -235,8 +234,7 @@ export class SegmentationManager {
           };
           break;
         } catch (error) {
-          const modelName = modelAssetPath === SELFIE_MODEL_MULTICLASS_URL ? 'Selfie multiclass segmentation model' : 'Selfie segmentation model';
-          console.warn(`${modelName} failed to initialize.`, error);
+          console.warn('Selfie segmentation model failed to initialize.', error);
         }
       }
     }

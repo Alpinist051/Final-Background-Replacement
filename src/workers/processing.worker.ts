@@ -54,9 +54,11 @@ type QualityTier = {
 };
 
 const QUALITY_TIERS: QualityTier[] = [
-  { maxWidth: 640, maxHeight: 480, temporalAlpha: 0.76 },
-  { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.82 },
-  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.9 }
+  { maxWidth: 640, maxHeight: 480, temporalAlpha: 0.74 },
+  { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.8 },
+  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.86 },
+  { maxWidth: 320, maxHeight: 180, temporalAlpha: 0.92 },
+  { maxWidth: 256, maxHeight: 144, temporalAlpha: 0.94 }
 ];
 
 let currentTuning: VirtualBackgroundTuning = {
