@@ -65,7 +65,7 @@ export interface SegmentationFrameResult {
   branches: SegmentationBranchResult[];
 }
 
-export type SegmentationBranchKind = 'selfie' | 'subject';
+export type SegmentationBranchKind = 'selfie';
 
 export interface SegmentationBranchResult {
   kind: SegmentationBranchKind;

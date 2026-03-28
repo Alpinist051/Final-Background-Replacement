@@ -4,7 +4,6 @@ import {
   type MPMask
 } from '@mediapipe/tasks-vision';
 import type {
-  SegmentationBranchKind,
   SegmentationBranchResult,
   SegmentationFrameResult
 } from '@/types/engine';
@@ -23,21 +22,10 @@ const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wa
 const SELFIE_MODEL_MULTICLASS_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite';
 const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
 const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite';
-const SUBJECT_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite';
 
 type SegmenterSlot = {
   segmenter: ImageSegmenter;
-  kind: SegmentationBranchKind;
   labels: string[];
-};
-
-type CachedBranch = SegmentationBranchResult & {
-  updatedAtMs: number;
-};
-
-export type SegmentOptions = {
-  refreshSubject?: boolean;
-  subjectFrame?: ImageBitmap;
 };
 
 function extractCategoryMask(mask: MPMask | undefined): Uint8Array | undefined {
@@ -209,7 +197,6 @@ async function createSegmenter(vision: Awaited<ReturnType<typeof FilesetResolver
 }
 
 function createBranchResult(
-  kind: SegmentationBranchKind,
   width: number,
   height: number,
   categoryMask: Uint8Array,
@@ -218,7 +205,7 @@ function createBranchResult(
   ageMs: number
 ): SegmentationBranchResult {
   return {
-    kind,
+    kind: 'selfie',
     width,
     height,
     categoryMask,
@@ -230,12 +217,9 @@ function createBranchResult(
 
 export class SegmentationManager {
   private selfieSegmenter: SegmenterSlot | null = null;
-  private subjectSegmenter: SegmenterSlot | null = null;
-  private selfieModelUrl: string = SELFIE_MODEL_LANDSCAPE_URL;
-  private cachedSubjectBranch: CachedBranch | null = null;
 
   async initialize(sourceWidth = 1280, sourceHeight = 720): Promise<void> {
-    if (this.selfieSegmenter && this.subjectSegmenter) return;
+    if (this.selfieSegmenter) return;
 
     const vision = await FilesetResolver.forVisionTasks(VISION_WASM_URL);
 
@@ -247,10 +231,8 @@ export class SegmentationManager {
           const selfieSegmenter = await createSegmenter(vision, modelAssetPath);
           this.selfieSegmenter = {
             segmenter: selfieSegmenter,
-            kind: 'selfie',
             labels: selfieSegmenter.getLabels()
           };
-          this.selfieModelUrl = modelAssetPath;
           break;
         } catch (error) {
           const modelName = modelAssetPath === SELFIE_MODEL_MULTICLASS_URL ? 'Selfie multiclass segmentation model' : 'Selfie segmentation model';
@@ -259,24 +241,9 @@ export class SegmentationManager {
       }
     }
 
-    if (!this.subjectSegmenter) {
-      try {
-        const subjectSegmenter = await createSegmenter(vision, SUBJECT_MODEL_URL);
-        this.subjectSegmenter = {
-          segmenter: subjectSegmenter,
-          kind: 'subject',
-          labels: subjectSegmenter.getLabels()
-        };
-      } catch (error) {
-        console.warn('Subject segmentation model failed to initialize. Falling back to selfie-only mode.', error);
-      }
+    if (!this.selfieSegmenter) {
+      throw new Error('Unable to initialize the selfie segmentation model.');
     }
-
-    if (!this.selfieSegmenter && !this.subjectSegmenter) {
-      throw new Error('Unable to initialize any segmentation model.');
-    }
-
-    this.cachedSubjectBranch = null;
   }
 
   private segmentBranch(
@@ -309,7 +276,7 @@ export class SegmentationManager {
       ? resampleConfidenceMask(confidenceMask, sourceWidth, sourceHeight, outputWidth, outputHeight)
       : undefined;
 
-    const branch = createBranchResult(slot.kind, outputWidth, outputHeight, resizedCategoryMask, resizedConfidenceMask, slot.labels, ageMs);
+    const branch = createBranchResult(outputWidth, outputHeight, resizedCategoryMask, resizedConfidenceMask, slot.labels, ageMs);
 
     result.categoryMask?.close();
     result.confidenceMasks?.forEach((mask) => mask.close());
@@ -317,13 +284,13 @@ export class SegmentationManager {
     return branch;
   }
 
-  async segment(frame: ImageBitmap, timestampMs: number, options: SegmentOptions = {}): Promise<SegmentationFrameResult> {
-    if (!this.selfieSegmenter && !this.subjectSegmenter) {
+  async segment(frame: ImageBitmap, timestampMs: number): Promise<SegmentationFrameResult> {
+    if (!this.selfieSegmenter) {
       await this.initialize(frame.width, frame.height);
     }
 
-    if (!this.selfieSegmenter && !this.subjectSegmenter) {
-      throw new Error('Segmentation models are not initialized.');
+    if (!this.selfieSegmenter) {
+      throw new Error('Segmentation model is not initialized.');
     }
 
     const branches: SegmentationBranchResult[] = [];
@@ -334,28 +301,6 @@ export class SegmentationManager {
       } catch (error) {
         console.warn('Selfie segmentation frame failed.', error);
       }
-    }
-
-    let subjectBranch: CachedBranch | null = this.cachedSubjectBranch;
-    if (this.subjectSegmenter && options.refreshSubject) {
-      const subjectSource = options.subjectFrame ?? frame;
-      try {
-        const nextSubject = this.segmentBranch(this.subjectSegmenter, subjectSource, timestampMs, 0, frame.width, frame.height);
-        subjectBranch = {
-          ...nextSubject,
-          updatedAtMs: timestampMs
-        };
-        this.cachedSubjectBranch = subjectBranch;
-      } catch (error) {
-        console.warn('Subject segmentation frame failed. Reusing the cached subject branch when available.', error);
-      }
-    }
-
-    if (subjectBranch) {
-      branches.push({
-        ...subjectBranch,
-        ageMs: Math.max(0, timestampMs - subjectBranch.updatedAtMs)
-      });
     }
 
     if (!branches.length) {
@@ -371,13 +316,6 @@ export class SegmentationManager {
 
   close() {
     this.selfieSegmenter?.segmenter.close();
-    this.subjectSegmenter?.segmenter.close();
     this.selfieSegmenter = null;
-    this.subjectSegmenter = null;
-    this.cachedSubjectBranch = null;
-  }
-
-  resetCache() {
-    this.cachedSubjectBranch = null;
   }
 }

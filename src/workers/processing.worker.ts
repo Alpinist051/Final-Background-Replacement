@@ -46,9 +46,6 @@ let maskProcessor: MaskProcessor | null = null;
 let analysisCanvas: ReturnType<typeof createAnalysisCanvas> | null = null;
 let processingCanvas: OffscreenCanvas | null = null;
 let processingContext: OffscreenCanvasRenderingContext2D | null = null;
-let subjectCanvas: OffscreenCanvas | null = null;
-let subjectContext: OffscreenCanvasRenderingContext2D | null = null;
-let subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
 
 type QualityTier = {
   maxWidth: number;
@@ -111,9 +108,7 @@ function updateProcessingResolution(tierIndex: number, announce = false) {
   processingHeight = fit.height;
   currentTuning = { ...currentTuning, temporalAlpha: tier.temporalAlpha };
   renderer?.resize(processingWidth, processingHeight);
-  segmenter?.resetCache();
   maskProcessor?.reset();
-  subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
   if (announce) {
     postMessage({
       type: 'quality',
@@ -139,13 +134,6 @@ function ensureProcessingCanvas() {
   }
 }
 
-function ensureSubjectCanvas(width: number, height: number) {
-  if (!subjectCanvas || subjectCanvas.width !== width || subjectCanvas.height !== height) {
-    subjectCanvas = new OffscreenCanvas(width, height);
-    subjectContext = subjectCanvas.getContext('2d', { willReadFrequently: true });
-  }
-}
-
 async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
   if (!processingCanvas || !processingContext) return bitmap;
@@ -154,57 +142,6 @@ async function drawForProcessing(bitmap: ImageBitmap) {
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
   processingContext.setTransform(1, 0, 0, 1, 0, 0);
   return createImageBitmap(processingCanvas);
-}
-
-function chooseSubjectProcessingBounds(qualityTier: number, fps: number, segmentationMs: number, motion: number) {
-  if (qualityTier >= 2) {
-    return fps < 20 || segmentationMs > 80
-      ? { maxWidth: 256, maxHeight: 256 }
-      : { maxWidth: 288, maxHeight: 288 };
-  }
-
-  if (fps > 28 && segmentationMs < 55) {
-    return { maxWidth: 384, maxHeight: 384 };
-  }
-
-  if (fps < 24 || segmentationMs > 60) {
-    return { maxWidth: 288, maxHeight: 288 };
-  }
-
-  if (motion > 0.08) {
-    return { maxWidth: 384, maxHeight: 384 };
-  }
-
-  return { maxWidth: 352, maxHeight: 352 };
-}
-
-async function drawForSubjectProcessing(bitmap: ImageBitmap, maxWidth: number, maxHeight: number) {
-  const fit = fitWithinBounds(bitmap.width, bitmap.height, maxWidth, maxHeight);
-  ensureSubjectCanvas(fit.width, fit.height);
-  if (!subjectCanvas || !subjectContext) return null;
-
-  subjectContext.clearRect(0, 0, subjectCanvas.width, subjectCanvas.height);
-  subjectContext.setTransform(1, 0, 0, -1, 0, subjectCanvas.height);
-  subjectContext.drawImage(bitmap, 0, 0, subjectCanvas.width, subjectCanvas.height);
-  return createImageBitmap(subjectCanvas);
-}
-
-function chooseSubjectRefreshInterval(motion: number, fps: number, segmentationMs: number, qualityTier: number) {
-  const overloaded = fps < 24 || segmentationMs > 60 || qualityTier >= 2;
-
-  if (motion > 0.05) {
-    return overloaded ? 2 : 1;
-  }
-
-  if (motion > 0.025) {
-    return overloaded ? 2 : 1;
-  }
-
-  if (overloaded) {
-    return qualityTier >= 2 ? 4 : 3;
-  }
-
-  return 2;
 }
 
 function computeLuma(bitmap: ImageBitmap) {
@@ -296,7 +233,6 @@ async function handleInit(message: InitMessage) {
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
   currentBackground = message.background;
-  subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
   updateProcessingResolution(0, false);
   scheduleTick();
   postMessage({ type: 'ready' });
@@ -324,32 +260,10 @@ async function processTick() {
 
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
-  const recentStats = performanceTracker.snapshot();
-  const subjectRefreshInterval = chooseSubjectRefreshInterval(motion, recentStats.fps || TARGET_FPS, recentStats.segmentationMs, qualityTierIndex);
-  const subjectBounds = chooseSubjectProcessingBounds(qualityTierIndex, recentStats.fps || TARGET_FPS, recentStats.segmentationMs, motion);
-  const refreshSubject = subjectFramesSinceRefresh === Number.POSITIVE_INFINITY || subjectFramesSinceRefresh >= subjectRefreshInterval;
-
-  let subjectBitmap: ImageBitmap | null = null;
-  if (refreshSubject) {
-    // Use the original frame here so the subject branch is transformed exactly once.
-    // Feeding it the already-processed bitmap would introduce a second flip and make
-    // the subject mask drift away from the selfie branch.
-    subjectBitmap = await drawForSubjectProcessing(sourceFrame, subjectBounds.maxWidth, subjectBounds.maxHeight);
-  }
-
   const segmentationStart = performance.now();
-  let segmentation;
-  try {
-    segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart), {
-      refreshSubject,
-      subjectFrame: subjectBitmap ?? undefined
-    });
-  } finally {
-    subjectBitmap?.close();
-  }
+  const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
   const processedMask = maskProcessor.process(segmentation, currentTuning, motion);
-  subjectFramesSinceRefresh = refreshSubject ? 0 : subjectFramesSinceRefresh + 1;
 
   const tuning = boostTuning(brightness, motion, processedMask);
 
@@ -419,8 +333,6 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   if (message.type === 'resize') {
     sourceWidth = message.width;
     sourceHeight = message.height;
-    segmenter?.resetCache();
-    subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
     updateProcessingResolution(qualityTierIndex, false);
     return;
   }
@@ -441,8 +353,5 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     segmenter = null;
     maskProcessor = null;
     previousLuma = null;
-    subjectFramesSinceRefresh = Number.POSITIVE_INFINITY;
-    subjectCanvas = null;
-    subjectContext = null;
   }
 };

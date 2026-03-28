@@ -19,7 +19,6 @@ function clamp01(value: number) {
   return Math.max(0, Math.min(1, value));
 }
 
-type BranchKind = SegmentationFrameResult['branches'][number]['kind'];
 type LabelClass = 0 | 1 | 2 | 3;
 
 type LabelProfile = {
@@ -52,31 +51,7 @@ function classifyLabel(label: string): LabelClass {
   return 2;
 }
 
-function dilateBinaryMask(source: Uint8Array, width: number, height: number, radius = 1) {
-  const output = new Uint8Array(source.length);
-  for (let y = 0; y < height; y += 1) {
-    const minY = Math.max(0, y - radius);
-    const maxY = Math.min(height - 1, y + radius);
-    for (let x = 0; x < width; x += 1) {
-      const minX = Math.max(0, x - radius);
-      const maxX = Math.min(width - 1, x + radius);
-      let value = 0;
-      for (let sampleY = minY; sampleY <= maxY && value === 0; sampleY += 1) {
-        const row = sampleY * width;
-        for (let sampleX = minX; sampleX <= maxX; sampleX += 1) {
-          if (source[row + sampleX] !== 0) {
-            value = 1;
-            break;
-          }
-        }
-      }
-      output[y * width + x] = value;
-    }
-  }
-  return output;
-}
-
-function buildClassProfile(kind: BranchKind, labels: string[]): LabelProfile {
+function buildClassProfile(labels: string[]): LabelProfile {
   const size = Math.max(1, labels.length);
   const weights = new Float32Array(size);
   const classes = new Uint8Array(size);
@@ -88,19 +63,15 @@ function buildClassProfile(kind: BranchKind, labels: string[]): LabelProfile {
     if (labelClass === 0) {
       weights[i] = 0;
     } else if (labelClass === 1) {
-      weights[i] = kind === 'selfie' ? 1.1 : 0.96;
+      weights[i] = 1.1;
     } else if (labelClass === 3) {
-      weights[i] = kind === 'selfie' ? 1.02 : 1.08;
+      weights[i] = 1.02;
     } else {
-      weights[i] = kind === 'selfie' ? 1.01 : 1.0;
+      weights[i] = 1.01;
     }
   }
 
   return { weights, classes };
-}
-
-function branchBoost(kind: BranchKind) {
-  return kind === 'selfie' ? 1.04 : 1.0;
 }
 
 export class MaskProcessor {
@@ -111,11 +82,11 @@ export class MaskProcessor {
     classes: new Uint8Array([0, 2])
   };
 
-  private getClassProfile(kind: BranchKind, labels: string[]) {
-    const key = `${kind}|${labels.join('|')}`;
+  private getClassProfile(labels: string[]) {
+    const key = labels.join('|');
     if (key !== this.classProfileKey) {
       this.classProfileKey = key;
-      this.classProfile = buildClassProfile(kind, labels);
+      this.classProfile = buildClassProfile(labels);
     }
     return this.classProfile;
   }
@@ -124,28 +95,14 @@ export class MaskProcessor {
     const { width, height, branches } = result;
     const pixelCount = width * height;
     const motionFactor = clamp01(liveMotion * 5.5);
-    const hasSelfieBranch = branches.some((branch) => branch.kind === 'selfie');
-    const orderedBranches = [
-      ...branches.filter((branch) => branch.kind === 'selfie'),
-      ...branches.filter((branch) => branch.kind === 'subject')
-    ];
-
     const selfieAlpha = createFloatBuffer(pixelCount);
-    const subjectHumanAlpha = createFloatBuffer(pixelCount);
-    const subjectObjectAlpha = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount);
     const tuningBoost = Math.min(1.32, Math.max(0.94, tuning.confidenceBoost));
 
-    for (const branch of orderedBranches) {
-      const classProfile = this.getClassProfile(branch.kind, branch.labels);
-      const kindBoost = branchBoost(branch.kind);
-      const ageLimit = branch.kind === 'subject'
-        ? (motionFactor > 0.55 ? 110 : motionFactor > 0.25 ? 170 : 260)
-        : 0;
-      const ageFloor = branch.kind === 'subject'
-        ? (motionFactor > 0.55 ? 0.12 : motionFactor > 0.25 ? 0.26 : 0.42)
-        : 1;
-      const ageFactor = branch.kind === 'subject' ? Math.max(ageFloor, 1 - branch.ageMs / ageLimit) : 1;
+    for (const branch of branches) {
+      if (branch.kind !== 'selfie') continue;
+
+      const classProfile = this.getClassProfile(branch.labels);
       const sourceConfidence = branch.confidenceMask;
 
       for (let i = 0; i < pixelCount; i += 1) {
@@ -155,38 +112,12 @@ export class MaskProcessor {
 
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i]) : 1;
         const classWeight = classProfile.weights[categoryIndex] ?? 1;
-        let alpha = confidence * classWeight * kindBoost * ageFactor * tuningBoost;
-
-        if (branch.kind === 'selfie') {
-          alpha = Math.max(alpha, confidence * 0.95);
-          selfieAlpha[i] = Math.max(selfieAlpha[i], alpha);
-          confidenceMask[i] = Math.max(confidenceMask[i], clamp01(confidence * ageFactor));
-          continue;
-        }
-
-        if (labelClass === 1) {
-          if (confidence >= 0.45) {
-            subjectHumanAlpha[i] = Math.max(subjectHumanAlpha[i], Math.max(alpha * 0.78, confidence * 0.68));
-          }
-        } else {
-          const objectThreshold = labelClass === 3 ? 0.35 : 0.45;
-          if (confidence >= objectThreshold) {
-            subjectObjectAlpha[i] = Math.max(
-              subjectObjectAlpha[i],
-              Math.max(alpha * (labelClass === 3 ? 0.98 : 0.9), confidence * (labelClass === 3 ? 0.82 : 0.75))
-            );
-          }
-        }
-
-        confidenceMask[i] = Math.max(confidenceMask[i], clamp01(confidence * ageFactor));
+        let alpha = confidence * classWeight * tuningBoost;
+        alpha = Math.max(alpha, confidence * 0.95);
+        selfieAlpha[i] = Math.max(selfieAlpha[i], alpha);
+        confidenceMask[i] = Math.max(confidenceMask[i], clamp01(confidence));
       }
     }
-
-    const selfieSupport = new Uint8Array(pixelCount);
-    for (let i = 0; i < pixelCount; i += 1) {
-      selfieSupport[i] = selfieAlpha[i] > 0.16 ? 1 : 0;
-    }
-    const selfieHalo = hasSelfieBranch ? dilateBinaryMask(selfieSupport, width, height, 2) : null;
 
     const previousAlphaMask = this.previousAlphaMask;
     const nextAlphaMask = createFloatBuffer(pixelCount);
@@ -198,21 +129,7 @@ export class MaskProcessor {
 
     for (let i = 0; i < pixelCount; i += 1) {
       const previousAlpha = previousAlphaMask?.[i] ?? 0;
-
-      let currentAlpha = selfieAlpha[i];
-
-      if (subjectObjectAlpha[i] > currentAlpha) {
-        currentAlpha = subjectObjectAlpha[i];
-      }
-
-      const allowSubjectHuman = !hasSelfieBranch
-        || (selfieHalo?.[i] ?? 0) > 0
-        || subjectHumanAlpha[i] >= 0.72
-        || previousAlpha >= (motionFactor > 0.35 ? 0.45 : 0.55);
-      if (allowSubjectHuman && subjectHumanAlpha[i] > currentAlpha) {
-        currentAlpha = subjectHumanAlpha[i];
-      }
-
+      const currentAlpha = selfieAlpha[i];
       let alpha = clamp01(currentAlpha);
       if (previousAlphaMask) {
         const stability = clamp01(confidenceMask[i] * 0.85 + (1 - motionFactor) * 0.2);
