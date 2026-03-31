@@ -1,4 +1,4 @@
-import type { SegmentationFrameResult, VirtualBackgroundTuning } from '@/types/engine';
+import type { SegmentationFrameResult } from '@/types/engine';
 
 export interface ProcessedMask {
   alphaMask: Float32Array;
@@ -15,85 +15,82 @@ function createFloatBuffer(length: number, fill = 0) {
   return buffer;
 }
 
-function clamp01(value: number) {
-  return Math.max(0, Math.min(1, value));
+function cleanBinaryMask(source: Uint8Array, width: number, height: number) {
+  const output = new Uint8Array(source.length);
+
+  for (let y = 0; y < height; y += 1) {
+    const top = Math.max(0, y - 1);
+    const bottom = Math.min(height - 1, y + 1);
+
+    for (let x = 0; x < width; x += 1) {
+      const left = Math.max(0, x - 1);
+      const right = Math.min(width - 1, x + 1);
+      let foreground = 0;
+      let sampleCount = 0;
+
+      for (let sampleY = top; sampleY <= bottom; sampleY += 1) {
+        const row = sampleY * width;
+        for (let sampleX = left; sampleX <= right; sampleX += 1) {
+          sampleCount += 1;
+          if ((source[row + sampleX] ?? 0) !== 0) {
+            foreground += 1;
+          }
+        }
+      }
+
+      output[y * width + x] = foreground >= Math.ceil(sampleCount / 2) ? 1 : 0;
+    }
+  }
+
+  return output;
 }
 
 export class MaskProcessor {
   private previousAlphaMask: Float32Array | null = null;
 
-  process(result: SegmentationFrameResult, tuning: VirtualBackgroundTuning, liveMotion = 0): ProcessedMask {
+  process(result: SegmentationFrameResult): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
-    const motionFactor = clamp01(liveMotion * (2.8 + tuning.motionBoost * 0.35));
-    const foregroundAlpha = createFloatBuffer(pixelCount);
-    const confidenceMask = createFloatBuffer(pixelCount);
-    const tuningBoost = Math.min(1.35, Math.max(0.92, tuning.confidenceBoost));
+    const alphaMask = createFloatBuffer(pixelCount);
 
     for (const branch of branches) {
       if (branch.kind !== 'human') continue;
 
-      const sourceConfidence = branch.confidenceMask;
+      const cleanedMask = cleanBinaryMask(branch.categoryMask, branch.width, branch.height);
       for (let i = 0; i < pixelCount; i += 1) {
-        const isForeground = (branch.categoryMask[i] ?? 0) !== 0;
-        if (!isForeground) continue;
-
-        const confidence = sourceConfidence ? clamp01(sourceConfidence[i]) : 1;
-        const alpha = clamp01(0.7 + confidence * 0.3 * tuningBoost);
-        if (alpha >= foregroundAlpha[i]) {
-          foregroundAlpha[i] = alpha;
-        }
-        confidenceMask[i] = Math.max(confidenceMask[i], confidence);
+        alphaMask[i] = cleanedMask[i] ? 1 : 0;
       }
     }
-
-    const previousAlphaMask = this.previousAlphaMask;
-    const nextAlphaMask = createFloatBuffer(pixelCount);
 
     let motionMagnitude = 0;
-    let foregroundPixels = 0;
-    let alphaSum = 0;
-    let confidenceSum = 0;
-
-    for (let i = 0; i < pixelCount; i += 1) {
-      const previousAlpha = previousAlphaMask?.[i] ?? 0;
-      const currentAlpha = foregroundAlpha[i];
-      let alpha = clamp01(currentAlpha);
-
-      if (previousAlphaMask) {
-        const stability = clamp01(confidenceMask[i] * 0.82 + (1 - motionFactor) * 0.18);
-        const riseBlend = clamp01(0.58 + stability * 0.32);
-        const fallBlend = clamp01(0.16 + stability * 0.18);
-        const carryBlend = clamp01(0.18 + stability * 0.5 + (1 - motionFactor) * 0.06);
-
-        if (alpha >= previousAlpha) {
-          alpha = previousAlpha + (alpha - previousAlpha) * riseBlend;
-        } else {
-          const softened = previousAlpha + (alpha - previousAlpha) * fallBlend;
-          alpha = Math.max(softened, previousAlpha * carryBlend);
+    const previousAlphaMask = this.previousAlphaMask;
+    if (previousAlphaMask && previousAlphaMask.length === pixelCount) {
+      let changedPixels = 0;
+      for (let i = 0; i < pixelCount; i += 1) {
+        if ((alphaMask[i] > 0.5) !== (previousAlphaMask[i] > 0.5)) {
+          changedPixels += 1;
         }
       }
-
-      alpha = clamp01(alpha);
-      nextAlphaMask[i] = alpha;
-
-      if (previousAlphaMask && (Math.abs(currentAlpha - previousAlpha) > 0.08 || Math.abs(alpha - previousAlpha) > 0.1)) {
-        motionMagnitude += 1;
-      }
-      if (alpha > 0.12) foregroundPixels += 1;
-      alphaSum += alpha;
-      confidenceSum += confidenceMask[i];
+      motionMagnitude = changedPixels / pixelCount;
     }
 
-    this.previousAlphaMask = new Float32Array(nextAlphaMask);
+    let foregroundPixels = 0;
+    let maskSum = 0;
+    for (let i = 0; i < pixelCount; i += 1) {
+      const value = alphaMask[i];
+      if (value > 0.5) foregroundPixels += 1;
+      maskSum += value;
+    }
+
+    this.previousAlphaMask = new Float32Array(alphaMask);
 
     return {
-      alphaMask: nextAlphaMask,
-      confidenceMask,
-      motionMagnitude: previousAlphaMask ? motionMagnitude / pixelCount : 0,
+      alphaMask,
+      confidenceMask: alphaMask,
+      motionMagnitude,
       foregroundRatio: foregroundPixels / pixelCount,
-      maskMean: alphaSum / pixelCount,
-      confidenceMean: confidenceSum / pixelCount
+      maskMean: maskSum / pixelCount,
+      confidenceMean: maskSum / pixelCount
     };
   }
 

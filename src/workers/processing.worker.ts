@@ -2,7 +2,7 @@ import { createAnalysisCanvas } from '@/utils/canvasUtils';
 import { createPerformanceTracker } from '@/utils/performance';
 import type { BackgroundSource, EngineStats, VirtualBackgroundTuning } from '@/types/engine';
 import { SegmentationManager } from '@/core/SegmentationManager';
-import { MaskProcessor, type ProcessedMask } from '@/core/MaskProcessor';
+import { MaskProcessor } from '@/core/MaskProcessor';
 import { WebGLRenderer, type RenderFrameArgs } from '@/core/WebGLRenderer';
 
 type InitMessage = {
@@ -184,23 +184,6 @@ function computeLuma(bitmap: ImageBitmap) {
   return { brightness, motion };
 }
 
-function boostTuning(brightness: number, motion: number, processedMask: ProcessedMask) {
-  const boosted = { ...currentTuning };
-  const motionSignal = Math.max(motion, processedMask.motionMagnitude);
-  const motionIntensity = Math.min(1, Math.max(0, motionSignal * 3.2));
-
-  if (motionIntensity > 0.55 || processedMask.motionMagnitude > 0.18) {
-    boosted.confidenceBoost = Math.max(boosted.confidenceBoost, 1.38);
-  }
-  if (brightness < 80) {
-    boosted.confidenceBoost = Math.min(2.5, boosted.confidenceBoost * boosted.brightnessBoost * 1.25);
-  }
-  boosted.confidenceBoost = Math.min(2.6, boosted.confidenceBoost);
-  boosted.temporalAlpha = Math.max(0.7, Math.min(0.93, boosted.temporalAlpha - motionIntensity * 0.06));
-  boosted.motionBoost = Math.max(0.35, Math.min(0.9, 0.42 + motionIntensity * 0.38));
-  return boosted;
-}
-
 function applyQualityFallback(fps: number, segmentationMs: number) {
   if (fps < LOW_FPS_THRESHOLD || segmentationMs > 70) {
     lowFpsStreak += 1;
@@ -264,9 +247,8 @@ async function processTick() {
   const segmentationStart = performance.now();
   const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
-  const processedMask = maskProcessor.process(segmentation, currentTuning, motion);
-
-  const tuning = boostTuning(brightness, motion, processedMask);
+  const processedMask = maskProcessor.process(segmentation);
+  const tuning = { ...currentTuning };
 
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
   const renderStart = performance.now();
