@@ -25,16 +25,18 @@ const HUMAN_LABELS = ['background', 'person'];
 
 type SegmenterSlot = {
   segmenter: ImageSegmenter;
+  labels: string[];
+  humanIndex: number;
 };
 
-function extractCategoryMask(mask: MPMask | undefined): Uint8Array | undefined {
+function extractBinaryMask(mask: MPMask | undefined, targetCategory: number): Uint8Array | undefined {
   if (!mask) return undefined;
 
   if (mask.hasUint8Array()) {
     const source = mask.getAsUint8Array();
     const output = new Uint8Array(source.length);
     for (let i = 0; i < source.length; i += 1) {
-      output[i] = source[i] > 0 ? 1 : 0;
+      output[i] = (source[i] ?? 0) === targetCategory ? 1 : 0;
     }
     return output;
   }
@@ -42,9 +44,37 @@ function extractCategoryMask(mask: MPMask | undefined): Uint8Array | undefined {
   const source = mask.getAsFloat32Array();
   const output = new Uint8Array(source.length);
   for (let i = 0; i < source.length; i += 1) {
-    output[i] = source[i] >= 0.5 ? 1 : 0;
+    output[i] = Math.round(source[i] ?? 0) === targetCategory ? 1 : 0;
   }
   return output;
+}
+
+function extractMaskFloats(mask: MPMask): Float32Array {
+  return mask.hasFloat32Array()
+    ? mask.getAsFloat32Array()
+    : Float32Array.from(mask.getAsUint8Array(), (value) => value / 255);
+}
+
+function normalizeLabel(label: string) {
+  return label.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+}
+
+function isBackgroundLabel(label: string) {
+  return normalizeLabel(label).includes('background');
+}
+
+function isHumanLabel(label: string) {
+  const normalized = normalizeLabel(label);
+  return normalized.includes('person') || normalized.includes('human');
+}
+
+function getHumanIndex(labels: string[]) {
+  const humanIndex = labels.findIndex((label) => isHumanLabel(label));
+  if (humanIndex >= 0) return humanIndex;
+
+  const backgroundIndex = labels.findIndex((label) => isBackgroundLabel(label));
+  if (backgroundIndex === 0 && labels.length > 1) return 1;
+  return labels.length > 1 ? labels.length - 1 : 0;
 }
 
 function chooseHumanModelCandidates() {
@@ -64,7 +94,7 @@ async function createSegmenter(
       runningMode: 'VIDEO',
       displayNamesLocale: 'en',
       outputCategoryMask: true,
-      outputConfidenceMasks: false
+      outputConfidenceMasks: true
     });
   } catch (error) {
     console.warn('GPU delegate failed for human segmentation, falling back to CPU.', error);
@@ -76,7 +106,7 @@ async function createSegmenter(
       runningMode: 'VIDEO',
       displayNamesLocale: 'en',
       outputCategoryMask: true,
-      outputConfidenceMasks: false
+      outputConfidenceMasks: true
     });
   }
 }
@@ -85,6 +115,8 @@ function createBranchResult(
   width: number,
   height: number,
   categoryMask: Uint8Array,
+  confidenceMask: Float32Array | undefined,
+  labels: string[],
   ageMs: number
 ): SegmentationBranchResult {
   return {
@@ -92,7 +124,8 @@ function createBranchResult(
     width,
     height,
     categoryMask,
-    labels: HUMAN_LABELS,
+    confidenceMask,
+    labels,
     ageMs
   };
 }
@@ -108,7 +141,13 @@ export class SegmentationManager {
     for (const modelAssetPath of chooseHumanModelCandidates()) {
       try {
         const segmenter = await createSegmenter(vision, modelAssetPath);
-        this.humanSegmenter = { segmenter };
+        const labels = segmenter.getLabels();
+        const resolvedLabels = labels.length > 0 ? labels : HUMAN_LABELS;
+        this.humanSegmenter = {
+          segmenter,
+          labels: resolvedLabels,
+          humanIndex: getHumanIndex(resolvedLabels)
+        };
         break;
       } catch (error) {
         console.warn('Human segmentation model failed to initialize.', error);
@@ -131,18 +170,26 @@ export class SegmentationManager {
     const result = slot.segmenter.segmentForVideo(frame, timestampMs);
     const sourceWidth = frame.width;
     const sourceHeight = frame.height;
-    const categoryMask = extractCategoryMask(result.categoryMask);
+    const categoryMask = extractBinaryMask(result.categoryMask, slot.humanIndex);
+    const confidenceMask = result.confidenceMasks?.[slot.humanIndex]
+      ?? (result.confidenceMasks && result.confidenceMasks.length > 0
+        ? result.confidenceMasks[result.confidenceMasks.length - 1]
+        : undefined);
+    const binaryConfidenceMask = confidenceMask ? extractMaskFloats(confidenceMask) : undefined;
 
     if (!categoryMask) {
       throw new Error('MediaPipe failed to return a human category mask.');
     }
 
     const resizedCategoryMask = resampleCategoryMask(categoryMask, sourceWidth, sourceHeight, outputWidth, outputHeight);
+    const resizedConfidenceMask = binaryConfidenceMask
+      ? resampleConfidenceMask(binaryConfidenceMask, sourceWidth, sourceHeight, outputWidth, outputHeight)
+      : undefined;
 
     result.categoryMask?.close();
     result.confidenceMasks?.forEach((mask) => mask.close());
 
-    return createBranchResult(outputWidth, outputHeight, resizedCategoryMask, ageMs);
+    return createBranchResult(outputWidth, outputHeight, resizedCategoryMask, resizedConfidenceMask, slot.labels, ageMs);
   }
 
   async segment(frame: ImageBitmap, timestampMs: number): Promise<SegmentationFrameResult> {
@@ -189,6 +236,28 @@ function resampleCategoryMask(
   if (sourceWidth === targetWidth && sourceHeight === targetHeight) return source;
 
   const output = new Uint8Array(targetWidth * targetHeight);
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sourceY = Math.min(sourceHeight - 1, Math.floor((y + 0.5) * sourceHeight / targetHeight));
+    const sourceRow = sourceY * sourceWidth;
+    const targetRow = y * targetWidth;
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sourceX = Math.min(sourceWidth - 1, Math.floor((x + 0.5) * sourceWidth / targetWidth));
+      output[targetRow + x] = source[sourceRow + sourceX] ?? 0;
+    }
+  }
+  return output;
+}
+
+function resampleConfidenceMask(
+  source: Float32Array,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number
+) {
+  if (sourceWidth === targetWidth && sourceHeight === targetHeight) return source;
+
+  const output = new Float32Array(targetWidth * targetHeight);
   for (let y = 0; y < targetHeight; y += 1) {
     const sourceY = Math.min(sourceHeight - 1, Math.floor((y + 0.5) * sourceHeight / targetHeight));
     const sourceRow = sourceY * sourceWidth;

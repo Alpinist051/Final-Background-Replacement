@@ -52,13 +52,24 @@ export class MaskProcessor {
     const { width, height, branches } = result;
     const pixelCount = width * height;
     const alphaMask = createFloatBuffer(pixelCount);
+    const confidenceMask = createFloatBuffer(pixelCount);
 
     for (const branch of branches) {
       if (branch.kind !== 'human') continue;
 
-      const cleanedMask = cleanBinaryMask(branch.categoryMask, branch.width, branch.height);
+      const sourceConfidence = branch.confidenceMask;
+      const threshold = sourceConfidence ? 0.6 : 0.5;
+      const binaryMask = new Uint8Array(branch.categoryMask.length);
+
       for (let i = 0; i < pixelCount; i += 1) {
-        alphaMask[i] = cleanedMask[i] ? 1 : 0;
+        const confidence = sourceConfidence ? Math.max(0, Math.min(1, sourceConfidence[i] ?? 0)) : (branch.categoryMask[i] ?? 0);
+        confidenceMask[i] = Math.max(confidenceMask[i], confidence);
+        binaryMask[i] = confidence >= threshold ? 1 : 0;
+      }
+
+      const cleanedMask = cleanBinaryMask(binaryMask, branch.width, branch.height);
+      for (let i = 0; i < pixelCount; i += 1) {
+        alphaMask[i] = cleanedMask[i] ? 1 : alphaMask[i];
       }
     }
 
@@ -86,11 +97,11 @@ export class MaskProcessor {
 
     return {
       alphaMask,
-      confidenceMask: alphaMask,
+      confidenceMask,
       motionMagnitude,
       foregroundRatio: foregroundPixels / pixelCount,
       maskMean: maskSum / pixelCount,
-      confidenceMean: maskSum / pixelCount
+      confidenceMean: confidenceMask.reduce((sum, value) => sum + value, 0) / pixelCount
     };
   }
 

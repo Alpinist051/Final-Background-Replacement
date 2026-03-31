@@ -185,26 +185,9 @@ function computeLuma(bitmap: ImageBitmap) {
 }
 
 function applyQualityFallback(fps: number, segmentationMs: number) {
-  if (fps < LOW_FPS_THRESHOLD || segmentationMs > 70) {
-    lowFpsStreak += 1;
-    highFpsStreak = 0;
-  } else if (fps > 33 && segmentationMs < 45) {
-    highFpsStreak += 1;
-    lowFpsStreak = 0;
-  } else {
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
-  }
-
-  if (lowFpsStreak >= LOW_FPS_FRAMES_BEFORE_DROP && qualityTierIndex < QUALITY_TIERS.length - 1) {
-    updateProcessingResolution(qualityTierIndex + 1, true);
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
-  } else if (highFpsStreak >= HIGH_FPS_FRAMES_BEFORE_RAISE && qualityTierIndex > 0) {
-    updateProcessingResolution(qualityTierIndex - 1, true);
-    lowFpsStreak = 0;
-    highFpsStreak = 0;
-  }
+  void fps;
+  void segmentationMs;
+  // Keep the highest processing resolution for human detection quality.
 }
 
 async function handleInit(message: InitMessage) {
