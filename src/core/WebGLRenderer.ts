@@ -129,6 +129,7 @@ export class WebGLRenderer {
   private previousMaskTexture: WebGLTexture | null = null;
   private temporalTexture: WebGLTexture | null = null;
   private finalMaskTexture: WebGLTexture | null = null;
+  private zeroMaskBuffer: Uint8Array | null = null;
   private fallbackCanvas: OffscreenCanvas | null = null;
   private fallbackContext2d: OffscreenCanvasRenderingContext2D | null = null;
   private background: BackgroundSource = { mode: 'solid', color: '#111827' };
@@ -383,6 +384,22 @@ export class WebGLRenderer {
     const nextPrevious = this.previousMaskTexture;
     this.previousMaskTexture = this.finalMaskTexture;
     this.finalMaskTexture = nextPrevious;
+  }
+
+  resetMaskHistory() {
+    if (!this.gl || !this.previousMaskTexture || !this.finalMaskTexture) return;
+    const zeroMask = this.getZeroMaskBuffer(this.width * this.height);
+    uploadMask(this.gl, this.previousMaskTexture, zeroMask, this.width, this.height);
+    uploadMask(this.gl, this.finalMaskTexture, zeroMask, this.width, this.height);
+  }
+
+  private getZeroMaskBuffer(length: number) {
+    if (!this.zeroMaskBuffer || this.zeroMaskBuffer.length !== length) {
+      this.zeroMaskBuffer = new Uint8Array(length);
+    } else {
+      this.zeroMaskBuffer.fill(0);
+    }
+    return this.zeroMaskBuffer;
   }
 
   private renderFallback(args: RenderFrameArgs) {

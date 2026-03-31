@@ -1,4 +1,4 @@
-import type { SegmentationFrameResult } from '@/types/engine';
+import type { SegmentationFrameResult, VirtualBackgroundTuning } from '@/types/engine';
 
 export interface ProcessedMask {
   alphaMask: Float32Array;
@@ -22,11 +22,12 @@ function clamp01(value: number) {
 export class MaskProcessor {
   private previousAlphaMask: Float32Array | null = null;
 
-  process(result: SegmentationFrameResult): ProcessedMask {
+  process(result: SegmentationFrameResult, tuning?: Pick<VirtualBackgroundTuning, 'confidenceBoost'>): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
     const alphaMask = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount);
+    const confidenceBoost = Math.max(0.5, tuning?.confidenceBoost ?? 1);
 
     for (const branch of branches) {
       if (branch.kind !== 'human') continue;
@@ -34,8 +35,9 @@ export class MaskProcessor {
       const sourceConfidence = branch.confidenceMask;
       for (let i = 0; i < pixelCount; i += 1) {
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i] ?? 0) : ((branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0);
-        alphaMask[i] = Math.max(alphaMask[i], confidence);
-        confidenceMask[i] = Math.max(confidenceMask[i], confidence);
+        const boostedConfidence = sourceConfidence ? clamp01(Math.pow(confidence, confidenceBoost)) : confidence;
+        alphaMask[i] = Math.max(alphaMask[i], boostedConfidence);
+        confidenceMask[i] = Math.max(confidenceMask[i], boostedConfidence);
       }
     }
 

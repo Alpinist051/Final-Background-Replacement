@@ -190,6 +190,10 @@ function applyQualityFallback(fps: number, segmentationMs: number) {
   // Keep the highest processing resolution for human detection quality.
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 async function handleInit(message: InitMessage) {
   renderer = new WebGLRenderer(message.canvas);
   sourceWidth = message.width;
@@ -230,15 +234,24 @@ async function processTick() {
   const segmentationStart = performance.now();
   const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
-  const processedMask = maskProcessor.process(segmentation);
   const tuning = { ...currentTuning };
+  const processedMask = maskProcessor.process(segmentation, tuning);
 
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
+  const adaptiveTemporalAlpha = clamp(
+    tuning.temporalAlpha + combinedMotion * tuning.motionBoost * 0.35,
+    0.82,
+    0.99
+  );
   const renderStart = performance.now();
 
   if ((processedMask.foregroundRatio < 0.01 || processedMask.foregroundRatio > 0.99) && performance.now() - lastMaskWarningAt > 3000) {
     lastMaskWarningAt = performance.now();
     console.warn(`Human mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage)`);
+  }
+
+  if (combinedMotion > 0.22) {
+    renderer.resetMaskHistory();
   }
 
   const renderArgs: RenderFrameArgs = {
@@ -247,7 +260,7 @@ async function processTick() {
     confidenceMask: processedMask.confidenceMask,
     backgroundFrame: sourceBackgroundFrame,
     background: currentBackground,
-    tuning
+    tuning: { ...tuning, temporalAlpha: adaptiveTemporalAlpha }
   };
 
   await renderer.renderFrame(renderArgs);
