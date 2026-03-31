@@ -239,19 +239,15 @@ async function processTick() {
 
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
   const adaptiveTemporalAlpha = clamp(
-    tuning.temporalAlpha + combinedMotion * tuning.motionBoost * 0.35,
-    0.82,
-    0.99
+    tuning.temporalAlpha * (1 - combinedMotion * tuning.motionBoost * 0.35),
+    0.62,
+    0.86
   );
   const renderStart = performance.now();
 
   if ((processedMask.foregroundRatio < 0.01 || processedMask.foregroundRatio > 0.99) && performance.now() - lastMaskWarningAt > 3000) {
     lastMaskWarningAt = performance.now();
     console.warn(`Human mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage)`);
-  }
-
-  if (combinedMotion > 0.22) {
-    renderer.resetMaskHistory();
   }
 
   const renderArgs: RenderFrameArgs = {

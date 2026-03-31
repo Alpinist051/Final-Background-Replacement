@@ -90,8 +90,8 @@ function resampleFloatMask(
 
 function choosePoseModelCandidates() {
   return [
-    POSE_MODEL_LITE_URL,
-    POSE_MODEL_FULL_URL
+    POSE_MODEL_FULL_URL,
+    POSE_MODEL_LITE_URL
   ];
 }
 

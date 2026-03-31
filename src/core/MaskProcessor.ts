@@ -27,7 +27,7 @@ export class MaskProcessor {
     const pixelCount = width * height;
     const alphaMask = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount);
-    const confidenceBoost = Math.max(0.5, tuning?.confidenceBoost ?? 1);
+    const confidenceBoost = Math.max(0.25, tuning?.confidenceBoost ?? 1);
 
     for (const branch of branches) {
       if (branch.kind !== 'human') continue;
@@ -35,7 +35,7 @@ export class MaskProcessor {
       const sourceConfidence = branch.confidenceMask;
       for (let i = 0; i < pixelCount; i += 1) {
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i] ?? 0) : ((branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0);
-        const boostedConfidence = sourceConfidence ? clamp01(Math.pow(confidence, confidenceBoost)) : confidence;
+        const boostedConfidence = sourceConfidence ? clamp01(Math.pow(confidence, 1 / confidenceBoost)) : confidence;
         alphaMask[i] = Math.max(alphaMask[i], boostedConfidence);
         confidenceMask[i] = Math.max(confidenceMask[i], boostedConfidence);
       }
