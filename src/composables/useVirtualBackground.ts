@@ -9,6 +9,8 @@ function cloneBackgroundImage(background: ImageBackground): ImageBackground {
 
 export function useVirtualBackground() {
   const canvasRef = shallowRef<HTMLCanvasElement | null>(null);
+  const debugRawCanvasRef = shallowRef<HTMLCanvasElement | null>(null);
+  const debugCleanedCanvasRef = shallowRef<HTMLCanvasElement | null>(null);
   const engineRef = shallowRef<BackgroundEngine | null>(null);
   let currentBackground = cloneBackgroundImage(DEFAULT_BACKGROUND);
 
@@ -45,9 +47,21 @@ export function useVirtualBackground() {
     return engineRef.value;
   }
 
+  function syncDebugCanvases() {
+    if (!engineRef.value || !debugRawCanvasRef.value || !debugCleanedCanvasRef.value) return;
+    engineRef.value.attachDebugCanvases(debugRawCanvasRef.value, debugCleanedCanvasRef.value);
+  }
+
   function attachCanvas(canvas: HTMLCanvasElement | null) {
     canvasRef.value = canvas;
     ensureEngine();
+    syncDebugCanvases();
+  }
+
+  function attachDebugCanvases(rawCanvas: HTMLCanvasElement | null, cleanedCanvas: HTMLCanvasElement | null) {
+    debugRawCanvasRef.value = rawCanvas;
+    debugCleanedCanvasRef.value = cleanedCanvas;
+    syncDebugCanvases();
   }
 
   async function start(deviceId?: string) {
@@ -80,6 +94,7 @@ export function useVirtualBackground() {
     state,
     canvasRef,
     attachCanvas,
+    attachDebugCanvases,
     start,
     stop,
     setBackground,

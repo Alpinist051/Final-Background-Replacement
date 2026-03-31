@@ -29,13 +29,19 @@ type UpdateBackgroundMessage = {
   bitmap: ImageBitmap;
 };
 
+type DebugCanvasesMessage = {
+  type: 'debugCanvases';
+  rawCanvas: OffscreenCanvas;
+  cleanedCanvas: OffscreenCanvas;
+};
+
 type ResizeMessage = {
   type: 'resize';
   width: number;
   height: number;
 };
 
-type WorkerMessage = InitMessage | FrameMessage | UpdateTuningMessage | UpdateBackgroundMessage | ResizeMessage | { type: 'stop' };
+type WorkerMessage = InitMessage | FrameMessage | UpdateTuningMessage | UpdateBackgroundMessage | DebugCanvasesMessage | ResizeMessage | { type: 'stop' };
 
 let renderer: WebGLRenderer | null = null;
 let segmenter: SegmentationManager | null = null;
@@ -43,6 +49,10 @@ let maskProcessor: MaskProcessor | null = null;
 let analysisCanvas: ReturnType<typeof createAnalysisCanvas> | null = null;
 let processingCanvas: OffscreenCanvas | null = null;
 let processingContext: OffscreenCanvasRenderingContext2D | null = null;
+let debugRawCanvas: OffscreenCanvas | null = null;
+let debugRawContext: OffscreenCanvasRenderingContext2D | null = null;
+let debugCleanedCanvas: OffscreenCanvas | null = null;
+let debugCleanedContext: OffscreenCanvasRenderingContext2D | null = null;
 
 type QualityTier = {
   maxWidth: number;
@@ -128,6 +138,39 @@ function ensureProcessingCanvas() {
   }
 }
 
+function drawMaskPreview(
+  canvas: OffscreenCanvas | null,
+  context: OffscreenCanvasRenderingContext2D | null,
+  mask: Float32Array,
+  width: number,
+  height: number
+) {
+  if (!canvas) return context;
+
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+
+  const nextContext = context ?? canvas.getContext('2d', { willReadFrequently: true, alpha: false });
+  if (!nextContext) return context;
+
+  const imageData = nextContext.createImageData(width, height);
+  const pixels = imageData.data;
+
+  for (let i = 0; i < mask.length; i += 1) {
+    const shade = Math.max(0, Math.min(255, Math.round((mask[i] ?? 0) * 255)));
+    const pixelIndex = i * 4;
+    pixels[pixelIndex + 0] = shade;
+    pixels[pixelIndex + 1] = shade;
+    pixels[pixelIndex + 2] = shade;
+    pixels[pixelIndex + 3] = 255;
+  }
+
+  nextContext.putImageData(imageData, 0, 0);
+  return nextContext;
+}
+
 async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
   if (!processingCanvas || !processingContext) return bitmap;
@@ -206,6 +249,13 @@ async function handleFrame(message: FrameMessage) {
   scheduleTick();
 }
 
+function handleDebugCanvases(message: DebugCanvasesMessage) {
+  debugRawCanvas = message.rawCanvas;
+  debugRawContext = null;
+  debugCleanedCanvas = message.cleanedCanvas;
+  debugCleanedContext = null;
+}
+
 async function processTick() {
   if (!renderer || !segmenter || !maskProcessor || !pendingFrame) {
     scheduleTick();
@@ -223,6 +273,11 @@ async function processTick() {
   const segmentationMs = performance.now() - segmentationStart;
   const tuning = { ...currentTuning };
   const processedMask = maskProcessor.process(segmentation, tuning);
+  const rawBranch = segmentation.branches[0];
+  const rawMask = rawBranch?.confidenceMask ?? Float32Array.from(rawBranch?.categoryMask ?? new Uint8Array(processedMask.alphaMask.length), (value) => (value ?? 0) > 0 ? 1 : 0);
+
+  debugRawContext = drawMaskPreview(debugRawCanvas, debugRawContext, rawMask, processedBitmap.width, processedBitmap.height);
+  debugCleanedContext = drawMaskPreview(debugCleanedCanvas, debugCleanedContext, processedMask.alphaMask, processedBitmap.width, processedBitmap.height);
 
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
   const adaptiveTemporalAlpha = clamp(
@@ -284,6 +339,10 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     renderer?.setBackgroundBitmap(message.bitmap);
     return;
   }
+  if (message.type === 'debugCanvases') {
+    handleDebugCanvases(message);
+    return;
+  }
   if (message.type === 'resize') {
     sourceWidth = message.width;
     sourceHeight = message.height;
@@ -305,5 +364,9 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     segmenter = null;
     maskProcessor = null;
     previousLuma = null;
+    debugRawCanvas = null;
+    debugRawContext = null;
+    debugCleanedCanvas = null;
+    debugCleanedContext = null;
   }
 };

@@ -376,6 +376,26 @@ button {
     0 18px 40px rgba(0, 0, 0, 0.36);
 }
 
+.preview-canvas--compact {
+  height: clamp(220px, 28vh, 320px);
+}
+
+.debug-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.debug-hint {
+  max-width: 76ch;
+}
+
 .error {
   margin: 12px 0 0;
   color: #fca5a5;
@@ -426,6 +446,14 @@ button {
   .preview-canvas {
     height: clamp(260px, 36vh, 380px);
   }
+
+  .preview-canvas--compact {
+    height: clamp(210px, 28vh, 280px);
+  }
+
+  .debug-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -453,5 +481,9 @@ button {
 
   .preview-canvas {
     height: clamp(230px, 30vh, 300px);
+  }
+
+  .preview-canvas--compact {
+    height: clamp(200px, 26vh, 250px);
   }
 }

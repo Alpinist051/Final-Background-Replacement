@@ -15,6 +15,12 @@ type WorkerEnvelope =
   | { type: 'quality'; quality: QualityUpdate }
   | { type: 'error'; error: string };
 
+type DebugCanvasesMessage = {
+  type: 'debugCanvases';
+  rawCanvas: OffscreenCanvas;
+  cleanedCanvas: OffscreenCanvas;
+};
+
 function cloneBackgroundImage(background: ImageBackground): ImageBackground {
   return { mode: 'image', url: background.url, label: background.label };
 }
@@ -41,6 +47,11 @@ export class BackgroundEngine {
   private backgroundRevision = 0;
   private offscreenCanvas: OffscreenCanvas | null = null;
   private canvasTransferred = false;
+  private debugRawCanvas: HTMLCanvasElement | null = null;
+  private debugCleanedCanvas: HTMLCanvasElement | null = null;
+  private debugRawOffscreenCanvas: OffscreenCanvas | null = null;
+  private debugCleanedOffscreenCanvas: OffscreenCanvas | null = null;
+  private debugCanvasesTransferred = false;
   private running = false;
   private inFlight = false;
   private queuedFrame = false;
@@ -94,11 +105,11 @@ export class BackgroundEngine {
       this.canvas.width = width;
       this.canvas.height = height;
       this.offscreenCanvas = this.canvas.transferControlToOffscreen();
-      this.worker!.postMessage({
-        type: 'init',
-        canvas: this.offscreenCanvas,
-        width,
-        height,
+    this.worker!.postMessage({
+      type: 'init',
+      canvas: this.offscreenCanvas,
+      width,
+      height,
         tuning: cloneTuning(this.tuning)
       }, [this.offscreenCanvas]);
       this.canvasTransferred = true;
@@ -108,6 +119,7 @@ export class BackgroundEngine {
     }
 
     await this.syncBackgroundToWorker();
+    this.syncDebugCanvasesToWorker();
 
     this.running = true;
     this.callbacks.onStatus?.('running');
@@ -117,6 +129,21 @@ export class BackgroundEngine {
   async setBackground(background: ImageBackground) {
     this.background = cloneBackgroundImage(background);
     await this.syncBackgroundToWorker();
+  }
+
+  attachDebugCanvases(rawCanvas: HTMLCanvasElement, cleanedCanvas: HTMLCanvasElement) {
+    if (this.debugRawCanvas === rawCanvas && this.debugCleanedCanvas === cleanedCanvas) {
+      this.syncDebugCanvasesToWorker();
+      return;
+    }
+
+    this.debugRawCanvas = rawCanvas;
+    this.debugCleanedCanvas = cleanedCanvas;
+    this.debugRawOffscreenCanvas = null;
+    this.debugCleanedOffscreenCanvas = null;
+    this.debugCanvasesTransferred = false;
+    this.ensureDebugCanvasesTransferred();
+    this.syncDebugCanvasesToWorker();
   }
 
   async stop() {
@@ -166,6 +193,32 @@ export class BackgroundEngine {
       this.callbacks.onError?.(e.message);
       this.callbacks.onStatus?.('error');
     };
+  }
+
+  private ensureDebugCanvasesTransferred() {
+    if (!this.debugRawCanvas || !this.debugCleanedCanvas) return;
+
+    if (!this.debugRawOffscreenCanvas) {
+      this.debugRawOffscreenCanvas = this.debugRawCanvas.transferControlToOffscreen();
+    }
+
+    if (!this.debugCleanedOffscreenCanvas) {
+      this.debugCleanedOffscreenCanvas = this.debugCleanedCanvas.transferControlToOffscreen();
+    }
+  }
+
+  private syncDebugCanvasesToWorker() {
+    if (!this.worker || this.debugCanvasesTransferred) return;
+    if (!this.debugRawOffscreenCanvas || !this.debugCleanedOffscreenCanvas) return;
+
+    const message: DebugCanvasesMessage = {
+      type: 'debugCanvases',
+      rawCanvas: this.debugRawOffscreenCanvas,
+      cleanedCanvas: this.debugCleanedOffscreenCanvas
+    };
+
+    this.worker.postMessage(message, [this.debugRawOffscreenCanvas, this.debugCleanedOffscreenCanvas]);
+    this.debugCanvasesTransferred = true;
   }
 
   private async syncBackgroundToWorker() {
