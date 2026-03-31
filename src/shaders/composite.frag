@@ -12,6 +12,6 @@ void main() {
   vec3 background = texture(u_background, v_uv).rgb;
   background = clamp((background - 0.5) * 1.05 + 0.5, 0.0, 1.0);
   float alpha = clamp(texture(u_mask, v_uv).r, 0.0, 1.0);
-  alpha = smoothstep(0.28, 0.82, alpha);
+  alpha = smoothstep(0.34, 0.74, alpha);
   outColor = vec4(mix(background, person, alpha), 1.0);
 }

@@ -8,7 +8,7 @@ layout(location = 0) in vec2 a_position;
 out vec2 v_uv;
 void main() {
   vec2 uv = (a_position + 1.0) * 0.5;
-  v_uv = uv;
+  v_uv = vec2(uv.x, 1.0 - uv.y);
   gl_Position = vec4(a_position, 0.0, 1.0);
 }`;
 
@@ -345,13 +345,6 @@ export class WebGLRenderer {
 
     const backgroundBitmap = this.backgroundBitmap;
 
-    if (backgroundBitmap) {
-      context.drawImage(backgroundBitmap, 0, 0, frame.width, frame.height);
-    } else {
-      context.fillStyle = '#111827';
-      context.fillRect(0, 0, frame.width, frame.height);
-    }
-
     tempContext.drawImage(frame, 0, 0, frame.width, frame.height);
     const imageData = tempContext.getImageData(0, 0, frame.width, frame.height);
     const pixels = imageData.data;
@@ -366,7 +359,17 @@ export class WebGLRenderer {
     }
 
     tempContext.putImageData(imageData, 0, 0);
+
+    context.save();
+    context.setTransform(1, 0, 0, -1, 0, frame.height);
+    if (backgroundBitmap) {
+      context.drawImage(backgroundBitmap, 0, 0, frame.width, frame.height);
+    } else {
+      context.fillStyle = '#111827';
+      context.fillRect(0, 0, frame.width, frame.height);
+    }
     context.drawImage(this.fallbackCanvas, 0, 0);
+    context.restore();
   }
 
   destroy() {
