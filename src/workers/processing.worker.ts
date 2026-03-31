@@ -54,11 +54,10 @@ type QualityTier = {
 };
 
 const QUALITY_TIERS: QualityTier[] = [
-  { maxWidth: 640, maxHeight: 480, temporalAlpha: 0.74 },
-  { maxWidth: 512, maxHeight: 384, temporalAlpha: 0.8 },
-  { maxWidth: 384, maxHeight: 288, temporalAlpha: 0.86 },
-  { maxWidth: 320, maxHeight: 180, temporalAlpha: 0.92 },
-  { maxWidth: 256, maxHeight: 144, temporalAlpha: 0.94 }
+  { maxWidth: 1280, maxHeight: 720, temporalAlpha: 0.7 },
+  { maxWidth: 960, maxHeight: 540, temporalAlpha: 0.76 },
+  { maxWidth: 768, maxHeight: 432, temporalAlpha: 0.82 },
+  { maxWidth: 640, maxHeight: 360, temporalAlpha: 0.88 }
 ];
 
 let currentTuning: VirtualBackgroundTuning = {
@@ -86,9 +85,9 @@ let highFpsStreak = 0;
 let tickHandle: number | null = null;
 let lastMaskWarningAt = 0;
 const TARGET_FPS = 30;
-const LOW_FPS_THRESHOLD = 25;
-const LOW_FPS_FRAMES_BEFORE_DROP = 4;
-const HIGH_FPS_FRAMES_BEFORE_RAISE = 45;
+const LOW_FPS_THRESHOLD = 20;
+const LOW_FPS_FRAMES_BEFORE_DROP = 8;
+const HIGH_FPS_FRAMES_BEFORE_RAISE = 18;
 
 function closeBitmap(bitmap: ImageBitmap | null) {
   bitmap?.close();

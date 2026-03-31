@@ -35,10 +35,11 @@ export class MaskProcessor {
 
       const sourceConfidence = branch.confidenceMask;
       for (let i = 0; i < pixelCount; i += 1) {
-        if ((branch.categoryMask[i] ?? 0) === 0) continue;
+        const isForeground = (branch.categoryMask[i] ?? 0) !== 0;
+        if (!isForeground) continue;
 
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i]) : 1;
-        const alpha = clamp01(confidence * tuningBoost);
+        const alpha = clamp01(0.7 + confidence * 0.3 * tuningBoost);
         if (alpha >= foregroundAlpha[i]) {
           foregroundAlpha[i] = alpha;
         }

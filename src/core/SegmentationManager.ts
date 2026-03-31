@@ -20,7 +20,6 @@ if (typeof importFallbackHost.import !== 'function') {
 
 const VISION_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
 const SELFIE_MODEL_SQUARE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
-const SELFIE_MODEL_LANDSCAPE_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/latest/selfie_segmenter_landscape.tflite';
 
 type SegmenterSlot = {
   segmenter: ImageSegmenter;
@@ -70,11 +69,8 @@ function getHumanIndex(labels: string[]) {
   return labels.length > 1 ? labels.length - 1 : 0;
 }
 
-function chooseHumanModelCandidates(sourceWidth: number, sourceHeight: number) {
-  const landscapeFirst = sourceWidth >= sourceHeight;
-  return landscapeFirst
-    ? [SELFIE_MODEL_LANDSCAPE_URL, SELFIE_MODEL_SQUARE_URL]
-    : [SELFIE_MODEL_SQUARE_URL, SELFIE_MODEL_LANDSCAPE_URL];
+function chooseHumanModelCandidates() {
+  return [SELFIE_MODEL_SQUARE_URL];
 }
 
 async function createSegmenter(
@@ -133,7 +129,7 @@ export class SegmentationManager {
     if (this.humanSegmenter) return;
 
     const vision = await FilesetResolver.forVisionTasks(VISION_WASM_URL);
-    const humanModelCandidates = chooseHumanModelCandidates(sourceWidth, sourceHeight);
+    const humanModelCandidates = chooseHumanModelCandidates();
 
     for (const modelAssetPath of humanModelCandidates) {
       try {
