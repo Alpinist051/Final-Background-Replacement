@@ -35,6 +35,17 @@ type DebugCanvasesMessage = {
   cleanedCanvas: OffscreenCanvas;
 };
 
+type DebugStep = 'init' | 'preprocess' | 'segmentation' | 'mask' | 'background' | 'composite';
+
+type DebugMetrics = Record<string, string | number | boolean | null | undefined>;
+
+type DebugMessage = {
+  type: 'debug';
+  step: DebugStep;
+  message: string;
+  metrics?: DebugMetrics;
+};
+
 type ResizeMessage = {
   type: 'resize';
   width: number;
@@ -57,24 +68,23 @@ let debugCleanedContext: OffscreenCanvasRenderingContext2D | null = null;
 type QualityTier = {
   maxWidth: number;
   maxHeight: number;
-  temporalAlpha: number;
 };
 
 const QUALITY_TIERS: QualityTier[] = [
-  { maxWidth: 1280, maxHeight: 720, temporalAlpha: 0.62 },
-  { maxWidth: 960, maxHeight: 540, temporalAlpha: 0.68 },
-  { maxWidth: 768, maxHeight: 432, temporalAlpha: 0.74 },
-  { maxWidth: 640, maxHeight: 360, temporalAlpha: 0.8 }
+  { maxWidth: 1280, maxHeight: 720 },
+  { maxWidth: 960, maxHeight: 540 },
+  { maxWidth: 768, maxHeight: 432 },
+  { maxWidth: 640, maxHeight: 360 }
 ];
 
 let currentTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.62,
-  bilateralSigmaSpatial: 4,
-  bilateralSigmaColor: 0.1,
-  feather: 0.08,
-  lightWrap: 0.22,
-  confidenceBoost: 1.12,
-  motionBoost: 1,
+  temporalAlpha: 1,
+  bilateralSigmaSpatial: 0,
+  bilateralSigmaColor: 0,
+  feather: 0,
+  lightWrap: 0,
+  confidenceBoost: 1,
+  motionBoost: 0,
   brightnessBoost: 1
 };
 const performanceTracker = createPerformanceTracker();
@@ -110,7 +120,6 @@ function updateProcessingResolution(tierIndex: number, announce = false) {
   const fit = fitWithinBounds(sourceWidth, sourceHeight, tier.maxWidth, tier.maxHeight);
   processingWidth = fit.width;
   processingHeight = fit.height;
-  currentTuning = { ...currentTuning, temporalAlpha: tier.temporalAlpha };
   renderer?.resize(processingWidth, processingHeight);
   maskProcessor?.reset();
   if (announce) {
@@ -171,11 +180,46 @@ function drawMaskPreview(
   return nextContext;
 }
 
+function roundMetric(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function summarizeMask(mask: ArrayLike<number>, threshold = 0.5) {
+  const length = mask.length;
+  if (length === 0) {
+    return { mean: 0, coverage: 0, min: 0, max: 0 };
+  }
+
+  let sum = 0;
+  let coverage = 0;
+  let min = 1;
+  let max = 0;
+
+  for (let i = 0; i < length; i += 1) {
+    const value = Math.max(0, Math.min(1, mask[i] ?? 0));
+    sum += value;
+    if (value >= threshold) coverage += 1;
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+
+  return {
+    mean: sum / length,
+    coverage: coverage / length,
+    min,
+    max
+  };
+}
+
+function postDebug(step: DebugStep, message: string, metrics: DebugMetrics = {}) {
+  const payload: DebugMessage = { type: 'debug', step, message, metrics };
+  postMessage(payload);
+}
+
 async function drawForProcessing(bitmap: ImageBitmap) {
   ensureProcessingCanvas();
   if (!processingCanvas || !processingContext) return bitmap;
   processingContext.clearRect(0, 0, processingCanvas.width, processingCanvas.height);
-  processingContext.setTransform(1, 0, 0, -1, 0, processingCanvas.height);
   processingContext.drawImage(bitmap, 0, 0, processingCanvas.width, processingCanvas.height);
   processingContext.setTransform(1, 0, 0, 1, 0, 0);
   return createImageBitmap(processingCanvas);
@@ -239,6 +283,13 @@ async function handleInit(message: InitMessage) {
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
   updateProcessingResolution(0, false);
+  postDebug('init', 'Segmentation model ready', {
+    sourceWidth,
+    sourceHeight,
+    processingWidth,
+    processingHeight,
+    model: 'selfie_segmenter.tflite'
+  });
   scheduleTick();
   postMessage({ type: 'ready' });
 }
@@ -266,25 +317,52 @@ async function processTick() {
   const sourceFrame = pendingFrame;
   pendingFrame = null;
 
+  const preprocessStart = performance.now();
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
+  const preprocessMs = performance.now() - preprocessStart;
+  postDebug('preprocess', 'Camera frame prepared', {
+    sourceWidth: sourceFrame.width,
+    sourceHeight: sourceFrame.height,
+    processingWidth: processedBitmap.width,
+    processingHeight: processedBitmap.height,
+    brightness: roundMetric(brightness),
+    motion: roundMetric(motion),
+    flipped: false,
+    preprocessMs: roundMetric(preprocessMs)
+  });
+
   const segmentationStart = performance.now();
   const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
   const tuning = { ...currentTuning };
-  const processedMask = maskProcessor.process(segmentation, tuning);
+  const processedMask = maskProcessor.process(segmentation);
   const rawBranch = segmentation.branches[0];
   const rawMask = rawBranch?.confidenceMask ?? Float32Array.from(rawBranch?.categoryMask ?? new Uint8Array(processedMask.alphaMask.length), (value) => (value ?? 0) > 0 ? 1 : 0);
+  const rawMaskSummary = summarizeMask(rawMask, 0.65);
+
+  postDebug('segmentation', 'MediaPipe human segmentation finished', {
+    branches: segmentation.branches.length,
+    segmentationMs: roundMetric(segmentationMs),
+    rawMean: roundMetric(rawMaskSummary.mean),
+    rawCoverage: roundMetric(rawMaskSummary.coverage),
+    rawMin: roundMetric(rawMaskSummary.min),
+    rawMax: roundMetric(rawMaskSummary.max)
+  });
 
   debugRawContext = drawMaskPreview(debugRawCanvas, debugRawContext, rawMask, processedBitmap.width, processedBitmap.height);
   debugCleanedContext = drawMaskPreview(debugCleanedCanvas, debugCleanedContext, processedMask.alphaMask, processedBitmap.width, processedBitmap.height);
 
+  const cleanedSummary = summarizeMask(processedMask.alphaMask, 0.5);
+  postDebug('mask', 'Foreground mask prepared', {
+    alphaMean: roundMetric(cleanedSummary.mean),
+    alphaCoverage: roundMetric(cleanedSummary.coverage),
+    confidenceMean: roundMetric(processedMask.confidenceMean),
+    foregroundRatio: roundMetric(processedMask.foregroundRatio),
+    maskMotion: roundMetric(processedMask.motionMagnitude)
+  });
+
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
-  const adaptiveTemporalAlpha = clamp(
-    tuning.temporalAlpha - combinedMotion * tuning.motionBoost * 0.18,
-    0.48,
-    0.8
-  );
   const renderStart = performance.now();
 
   if ((processedMask.foregroundRatio < 0.01 || processedMask.foregroundRatio > 0.99) && performance.now() - lastMaskWarningAt > 3000) {
@@ -296,13 +374,23 @@ async function processTick() {
     frame: processedBitmap,
     alphaMask: processedMask.alphaMask,
     confidenceMask: processedMask.confidenceMask,
-    tuning: { ...tuning, temporalAlpha: adaptiveTemporalAlpha }
+    tuning
   };
 
   await renderer.renderFrame(renderArgs);
   const renderMs = performance.now() - renderStart;
   const latencyMs = performance.now() - frameStart;
   const fps = latencyMs > 0 ? 1000 / latencyMs : 0;
+
+  postDebug('composite', 'Final composited frame rendered', {
+    width: processedBitmap.width,
+    height: processedBitmap.height,
+    renderMs: roundMetric(renderMs),
+    latencyMs: roundMetric(latencyMs),
+    fps: roundMetric(fps),
+    foregroundRatio: roundMetric(processedMask.foregroundRatio),
+    maskMean: roundMetric(processedMask.maskMean)
+  });
 
   performanceTracker.record({
     fps,
@@ -337,6 +425,10 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   if (message.type === 'tuning') { currentTuning = message.tuning; return; }
   if (message.type === 'background') {
     renderer?.setBackgroundBitmap(message.bitmap);
+    postDebug('background', 'Background bitmap uploaded to renderer', {
+      width: message.bitmap.width,
+      height: message.bitmap.height
+    });
     return;
   }
   if (message.type === 'debugCanvases') {

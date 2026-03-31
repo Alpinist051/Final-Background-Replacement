@@ -13,6 +13,12 @@ type WorkerEnvelope =
   | { type: 'stats'; stats: EngineStats }
   | { type: 'frameProcessed' }
   | { type: 'quality'; quality: QualityUpdate }
+  | {
+      type: 'debug';
+      step: string;
+      message: string;
+      metrics?: Record<string, string | number | boolean | null | undefined>;
+    }
   | { type: 'error'; error: string };
 
 type DebugCanvasesMessage = {
@@ -20,6 +26,8 @@ type DebugCanvasesMessage = {
   rawCanvas: OffscreenCanvas;
   cleanedCanvas: OffscreenCanvas;
 };
+
+type DebugMetrics = Record<string, string | number | boolean | null | undefined>;
 
 function cloneBackgroundImage(background: ImageBackground): ImageBackground {
   return { mode: 'image', url: background.url, label: background.label };
@@ -57,14 +65,14 @@ export class BackgroundEngine {
   private queuedFrame = false;
 
   private tuning: VirtualBackgroundTuning = {
-    temporalAlpha: 0.62,
-    bilateralSigmaSpatial: 4,
-    bilateralSigmaColor: 0.1,
-    feather: 0.08,
-    lightWrap: 0.22,
-    confidenceBoost: 1.12,
-    motionBoost: 1,
-    brightnessBoost: 1.3
+    temporalAlpha: 1,
+    bilateralSigmaSpatial: 0,
+    bilateralSigmaColor: 0,
+    feather: 0,
+    lightWrap: 0,
+    confidenceBoost: 1,
+    motionBoost: 0,
+    brightnessBoost: 1
   };
 
   private background: ImageBackground = { ...DEFAULT_BACKGROUND };
@@ -101,15 +109,21 @@ export class BackgroundEngine {
     const width = this.videoElement.videoWidth || 1280;
     const height = this.videoElement.videoHeight || 720;
 
+    this.logDebug('capture', 'Camera stream ready', {
+      width,
+      height,
+      deviceId: deviceId ?? 'default'
+    });
+
     if (!this.canvasTransferred) {
       this.canvas.width = width;
       this.canvas.height = height;
       this.offscreenCanvas = this.canvas.transferControlToOffscreen();
-    this.worker!.postMessage({
-      type: 'init',
-      canvas: this.offscreenCanvas,
-      width,
-      height,
+      this.worker!.postMessage({
+        type: 'init',
+        canvas: this.offscreenCanvas,
+        width,
+        height,
         tuning: cloneTuning(this.tuning)
       }, [this.offscreenCanvas]);
       this.canvasTransferred = true;
@@ -184,6 +198,9 @@ export class BackgroundEngine {
         this.callbacks.onError?.(msg.error);
         this.callbacks.onStatus?.('error');
       }
+      if (msg.type === 'debug') {
+        this.logDebug(msg.step, msg.message, msg.metrics);
+      }
       if (msg.type === 'quality') {
         this.tuning = { ...this.tuning, temporalAlpha: msg.quality.temporalAlpha };
       }
@@ -227,12 +244,21 @@ export class BackgroundEngine {
     const revision = ++this.backgroundRevision;
 
     try {
+      const loadStart = performance.now();
       const bitmap = await loadImageBitmap(this.background.url);
+      const width = bitmap.width;
+      const height = bitmap.height;
       if (revision !== this.backgroundRevision || !this.worker) {
         bitmap.close();
         return;
       }
       this.worker.postMessage({ type: 'background', bitmap }, [bitmap]);
+      this.logDebug('background', 'Background image loaded and sent to worker', {
+        label: this.background.label ?? 'unnamed',
+        width,
+        height,
+        loadMs: Math.round((performance.now() - loadStart) * 100) / 100
+      });
     } catch (error) {
       this.callbacks.onError?.(error instanceof Error ? error.message : 'Failed to load background image');
     }
@@ -265,5 +291,14 @@ export class BackgroundEngine {
     } else {
       requestAnimationFrame(() => void this.pump());
     }
+  }
+
+  private logDebug(step: string, message: string, metrics: DebugMetrics = {}) {
+    const title = `[virtual-background][${step}] ${message}`;
+    console.groupCollapsed(title);
+    if (Object.keys(metrics).length > 0) {
+      console.table(metrics);
+    }
+    console.groupEnd();
   }
 }

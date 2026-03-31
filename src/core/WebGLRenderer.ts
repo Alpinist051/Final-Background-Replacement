@@ -198,7 +198,7 @@ export class WebGLRenderer {
   }
 
   async renderFrame(args: RenderFrameArgs) {
-    if (!this.gl || !this.temporalProgram || !this.bilateralProgram || !this.compositeProgram) {
+    if (!this.gl || !this.compositeProgram) {
       this.renderFallback(args);
       return;
     }
@@ -207,22 +207,18 @@ export class WebGLRenderer {
     const gl = this.gl;
     this.resize(frame.width, frame.height);
 
-    if (!this.sourceTexture || !this.backgroundTexture || !this.currentMaskTexture || !this.confidenceTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
+    if (!this.sourceTexture || !this.backgroundTexture || !this.currentMaskTexture) {
       return;
     }
 
     uploadBitmap(gl, this.sourceTexture, frame);
     uploadMask(gl, this.currentMaskTexture, alphaMask, frame.width, frame.height);
-    uploadMask(gl, this.confidenceTexture, confidenceMask, frame.width, frame.height);
 
     this.renderImageFrame(tuning);
-    this.swapMaskTextures();
   }
 
-  private renderWithMaskAndComposite(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
-    this.runTemporalPass(tuning);
-    this.runBilateralPass(tuning);
-    this.runCompositePass(backgroundTexture, tuning);
+  private renderWithMaskAndComposite(backgroundTexture: WebGLTexture | null, _tuning: VirtualBackgroundTuning) {
+    this.runCompositePass(backgroundTexture);
   }
 
   private renderImageFrame(tuning: VirtualBackgroundTuning) {
@@ -295,18 +291,15 @@ export class WebGLRenderer {
     });
   }
 
-  private runCompositePass(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !backgroundTexture || !this.confidenceTexture) return;
+  private runCompositePass(backgroundTexture: WebGLTexture | null) {
+    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.currentMaskTexture || !backgroundTexture) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
     this.bindQuad(this.compositeProgram);
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
     this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
-    this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
-    this.setTexture(this.compositeProgram, 'u_confidence', this.confidenceTexture, 3);
-    this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
-    this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
+    this.setTexture(this.compositeProgram, 'u_mask', this.currentMaskTexture, 2);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -385,5 +378,9 @@ export class WebGLRenderer {
   private reapplyBackgroundBitmap() {
     if (!this.gl || !this.backgroundTexture || !this.backgroundBitmap) return;
     uploadBitmap(this.gl, this.backgroundTexture, this.backgroundBitmap);
+    console.info('[virtual-background][background] Background texture uploaded to GPU', {
+      width: this.backgroundBitmap.width,
+      height: this.backgroundBitmap.height
+    });
   }
 }
