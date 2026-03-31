@@ -14,13 +14,9 @@ export interface ProcessedMask {
 const ALPHA_RISE_WEIGHT = 0.82;
 const ALPHA_FALL_WEIGHT = 0.46;
 const PERSON_ALPHA_FLOOR = 0.48;
-const PERSON_FILL_RADIUS = 2;
-const PERSON_FILL_THRESHOLD = 0.18;
+const PERSON_FILL_RADIUS = 3;
+const PERSON_FILL_THRESHOLD = 0.16;
 const PERSON_FILL_STRENGTH = 1;
-const STRONG_FOREGROUND_THRESHOLD = 0.68;
-const SUPPORT_CONFIDENCE_THRESHOLD = 0.34;
-const SUPPORT_NEIGHBOR_THRESHOLD = 2;
-const HOLE_NEIGHBOR_THRESHOLD = 5;
 
 function createFloatBuffer(length: number, fill = 0) {
   const buffer = new Float32Array(length);
@@ -86,50 +82,11 @@ export class MaskProcessor {
       }
     }
 
-    const supportedAlphaMask = createFloatBuffer(pixelCount);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const index = y * width + x;
-        const currentValue = refinedAlphaMask[index] ?? 0;
-        const currentConfidence = confidenceMask[index] ?? 0;
-
-        let strongNeighbors = 0;
-        for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-          const sampleY = Math.max(0, Math.min(height - 1, y + offsetY));
-          const rowOffset = sampleY * width;
-          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-            if (offsetX === 0 && offsetY === 0) continue;
-            const sampleX = Math.max(0, Math.min(width - 1, x + offsetX));
-            if ((refinedAlphaMask[rowOffset + sampleX] ?? 0) >= STRONG_FOREGROUND_THRESHOLD) {
-              strongNeighbors += 1;
-            }
-          }
-        }
-
-        if (currentValue >= STRONG_FOREGROUND_THRESHOLD) {
-          supportedAlphaMask[index] = 1;
-          continue;
-        }
-
-        if (currentConfidence >= SUPPORT_CONFIDENCE_THRESHOLD && strongNeighbors >= SUPPORT_NEIGHBOR_THRESHOLD) {
-          supportedAlphaMask[index] = 1;
-          continue;
-        }
-
-        if (currentConfidence >= PERSON_FILL_THRESHOLD && strongNeighbors >= HOLE_NEIGHBOR_THRESHOLD) {
-          supportedAlphaMask[index] = 1;
-          continue;
-        }
-
-        supportedAlphaMask[index] = currentValue >= 0.5 ? currentValue : 0;
-      }
-    }
-
     let motionMagnitude = 0;
     if (this.previousAlphaMask && this.previousAlphaMask.length === pixelCount) {
       let diffSum = 0;
       for (let i = 0; i < pixelCount; i += 1) {
-        diffSum += Math.abs(supportedAlphaMask[i] - this.previousAlphaMask[i]);
+        diffSum += Math.abs(refinedAlphaMask[i] - this.previousAlphaMask[i]);
       }
       motionMagnitude = diffSum / pixelCount;
     }
@@ -138,17 +95,17 @@ export class MaskProcessor {
     let maskSum = 0;
     let confidenceSum = 0;
     for (let i = 0; i < pixelCount; i += 1) {
-      const alpha = supportedAlphaMask[i];
+      const alpha = refinedAlphaMask[i];
       const confidence = confidenceMask[i];
       if (alpha > 0.5) foregroundPixels += 1;
       maskSum += alpha;
       confidenceSum += confidence;
     }
 
-    this.previousAlphaMask = new Float32Array(supportedAlphaMask);
+    this.previousAlphaMask = new Float32Array(refinedAlphaMask);
 
     return {
-      alphaMask: supportedAlphaMask,
+      alphaMask: refinedAlphaMask,
       confidenceMask,
       motionMagnitude,
       foregroundRatio: foregroundPixels / pixelCount,
