@@ -97,6 +97,10 @@ function uploadMask(gl: WebGL2RenderingContext, texture: WebGLTexture, data: Flo
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, width, height, 0, gl.RED, gl.UNSIGNED_BYTE, bytes);
 }
 
+function sampleMaskSignal(index: number, alphaMask: Float32Array, confidenceMask: Float32Array) {
+  return Math.max(alphaMask[index] ?? 0, confidenceMask[index] ?? 0);
+}
+
 function getUniform(gl: WebGL2RenderingContext, program: WebGLProgram, name: string) {
   return gl.getUniformLocation(program, name);
 }
@@ -383,6 +387,7 @@ export class WebGLRenderer {
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
     this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
     this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
+    this.setTexture(this.compositeProgram, 'u_confidence', this.confidenceTexture, 3);
     this.setVec2(this.compositeProgram, 'u_texelSize', 1 / this.width, 1 / this.height);
     this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
     this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
@@ -397,7 +402,7 @@ export class WebGLRenderer {
 
   private renderFallback(args: RenderFrameArgs) {
     if (!this.fallback2d) return;
-    const { frame, alphaMask, backgroundFrame, tuning } = args;
+    const { frame, alphaMask, confidenceMask, backgroundFrame, tuning } = args;
     const context = this.fallback2d;
     this.canvas.width = frame.width;
     this.canvas.height = frame.height;
@@ -433,8 +438,38 @@ export class WebGLRenderer {
     tempContext.drawImage(frame, 0, 0, frame.width, frame.height);
     const imageData = tempContext.getImageData(0, 0, frame.width, frame.height);
     const pixels = imageData.data;
-    for (let i = 0; i < alphaMask.length; i += 1) {
-      pixels[i * 4 + 3] = Math.round(Math.max(0, Math.min(1, alphaMask[i])) * 255);
+    const edgeThreshold = 0.35;
+
+    for (let y = 0; y < frame.height; y += 1) {
+      const row = y * frame.width;
+      for (let x = 0; x < frame.width; x += 1) {
+        const index = row + x;
+        const centerSignal = sampleMaskSignal(index, alphaMask, confidenceMask);
+        let maxSignal = centerSignal;
+
+        for (let dy = -1; dy <= 1; dy += 1) {
+          const sampleY = Math.min(frame.height - 1, Math.max(0, y + dy));
+          const sampleRow = sampleY * frame.width;
+          for (let dx = -1; dx <= 1; dx += 1) {
+            if (dx === 0 && dy === 0) continue;
+            const sampleX = Math.min(frame.width - 1, Math.max(0, x + dx));
+            const sampleIndex = sampleRow + sampleX;
+            const signal = sampleMaskSignal(sampleIndex, alphaMask, confidenceMask);
+            if (signal > maxSignal) maxSignal = signal;
+          }
+        }
+
+        const pixelIndex = index * 4;
+        const alpha = Math.round(Math.max(0, Math.min(1, alphaMask[index] ?? 0)) * 255);
+        pixels[pixelIndex + 3] = alpha;
+
+        if (centerSignal < edgeThreshold && maxSignal >= edgeThreshold) {
+          pixels[pixelIndex] = 255;
+          pixels[pixelIndex + 1] = 0;
+          pixels[pixelIndex + 2] = 0;
+          pixels[pixelIndex + 3] = 255;
+        }
+      }
     }
     tempContext.putImageData(imageData, 0, 0);
     context.drawImage(this.fallbackCanvas, 0, 0);
