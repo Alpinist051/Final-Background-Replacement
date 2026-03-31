@@ -378,9 +378,5 @@ export class WebGLRenderer {
   private reapplyBackgroundBitmap() {
     if (!this.gl || !this.backgroundTexture || !this.backgroundBitmap) return;
     uploadBitmap(this.gl, this.backgroundTexture, this.backgroundBitmap);
-    console.info('[virtual-background][background] Background texture uploaded to GPU', {
-      width: this.backgroundBitmap.width,
-      height: this.backgroundBitmap.height
-    });
   }
 }

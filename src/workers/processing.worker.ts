@@ -97,10 +97,12 @@ let processingHeight = 480;
 let qualityTierIndex = 0;
 let tickHandle: number | null = null;
 let lastMaskWarningAt = 0;
+let lastDebugAt: Partial<Record<DebugStep, number>> = {};
 const TARGET_FPS = 30;
 const LOW_FPS_THRESHOLD = 20;
 const LOW_FPS_FRAMES_BEFORE_DROP = 8;
 const HIGH_FPS_FRAMES_BEFORE_RAISE = 18;
+const DEBUG_LOG_INTERVAL_MS = 2000;
 
 function closeBitmap(bitmap: ImageBitmap | null) {
   bitmap?.close();
@@ -211,7 +213,11 @@ function summarizeMask(mask: ArrayLike<number>, threshold = 0.5) {
   };
 }
 
-function postDebug(step: DebugStep, message: string, metrics: DebugMetrics = {}) {
+function postDebug(step: DebugStep, message: string, metrics: DebugMetrics = {}, force = false) {
+  const now = performance.now();
+  const last = lastDebugAt[step] ?? -Infinity;
+  if (!force && now - last < DEBUG_LOG_INTERVAL_MS) return;
+  lastDebugAt[step] = now;
   const payload: DebugMessage = { type: 'debug', step, message, metrics };
   postMessage(payload);
 }
@@ -282,6 +288,7 @@ async function handleInit(message: InitMessage) {
   await segmenter.initialize(message.width, message.height);
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
+  lastDebugAt = {};
   updateProcessingResolution(0, false);
   postDebug('init', 'Segmentation model ready', {
     sourceWidth,
@@ -289,7 +296,7 @@ async function handleInit(message: InitMessage) {
     processingWidth,
     processingHeight,
     model: 'selfie_segmenter.tflite'
-  });
+  }, true);
   scheduleTick();
   postMessage({ type: 'ready' });
 }
@@ -428,7 +435,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
     postDebug('background', 'Background bitmap uploaded to renderer', {
       width: message.bitmap.width,
       height: message.bitmap.height
-    });
+    }, true);
     return;
   }
   if (message.type === 'debugCanvases') {

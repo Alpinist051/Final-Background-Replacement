@@ -9,7 +9,9 @@ export interface ProcessedMask {
   confidenceMean: number;
 }
 
-const PERSON_THRESHOLD = 0.65;
+// Lower blend weights preserve more of the previous frame and reduce flicker.
+const ALPHA_RISE_WEIGHT = 0.34;
+const ALPHA_FALL_WEIGHT = 0.64;
 
 function createFloatBuffer(length: number, fill = 0) {
   const buffer = new Float32Array(length);
@@ -22,6 +24,8 @@ function clamp01(value: number) {
 }
 
 export class MaskProcessor {
+  private previousAlphaMask: Float32Array | null = null;
+
   process(result: SegmentationFrameResult, _tuning?: Pick<VirtualBackgroundTuning, 'confidenceBoost'>): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
@@ -33,14 +37,28 @@ export class MaskProcessor {
 
       const sourceConfidence = branch.confidenceMask;
       for (let i = 0; i < pixelCount; i += 1) {
+        const categoryValue = (branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0;
         const confidence = sourceConfidence
           ? clamp01(sourceConfidence[i] ?? 0)
-          : ((branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0);
-        const personValue = confidence >= PERSON_THRESHOLD ? confidence : 0;
+          : categoryValue;
+        const personValue = categoryValue ? confidence : 0;
+        const previousValue = this.previousAlphaMask?.[i] ?? 0;
+        const targetValue = personValue;
+        const blendWeight = targetValue >= previousValue ? ALPHA_RISE_WEIGHT : ALPHA_FALL_WEIGHT;
+        const smoothedValue = previousValue + (targetValue - previousValue) * blendWeight;
 
         confidenceMask[i] = Math.max(confidenceMask[i], confidence);
-        alphaMask[i] = Math.max(alphaMask[i], personValue);
+        alphaMask[i] = Math.max(alphaMask[i], clamp01(smoothedValue));
       }
+    }
+
+    let motionMagnitude = 0;
+    if (this.previousAlphaMask && this.previousAlphaMask.length === pixelCount) {
+      let diffSum = 0;
+      for (let i = 0; i < pixelCount; i += 1) {
+        diffSum += Math.abs(alphaMask[i] - this.previousAlphaMask[i]);
+      }
+      motionMagnitude = diffSum / pixelCount;
     }
 
     let foregroundPixels = 0;
@@ -54,15 +72,19 @@ export class MaskProcessor {
       confidenceSum += confidence;
     }
 
+    this.previousAlphaMask = new Float32Array(alphaMask);
+
     return {
       alphaMask,
       confidenceMask,
-      motionMagnitude: 0,
+      motionMagnitude,
       foregroundRatio: foregroundPixels / pixelCount,
       maskMean: maskSum / pixelCount,
       confidenceMean: confidenceSum / pixelCount
     };
   }
 
-  reset() {}
+  reset() {
+    this.previousAlphaMask = null;
+  }
 }
