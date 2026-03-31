@@ -5,7 +5,7 @@
         <p class="eyebrow">Browser-only human segmentation</p>
         <h1>Virtual background engine</h1>
         <p class="lede">
-          MediaPipe selfie segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
+          MediaPipe human segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
         </p>
       </div>
       <div class="hero-metrics">

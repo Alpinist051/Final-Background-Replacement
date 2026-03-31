@@ -15,34 +15,8 @@ function createFloatBuffer(length: number, fill = 0) {
   return buffer;
 }
 
-function cleanBinaryMask(source: Uint8Array, width: number, height: number) {
-  const output = new Uint8Array(source.length);
-
-  for (let y = 0; y < height; y += 1) {
-    const top = Math.max(0, y - 1);
-    const bottom = Math.min(height - 1, y + 1);
-
-    for (let x = 0; x < width; x += 1) {
-      const left = Math.max(0, x - 1);
-      const right = Math.min(width - 1, x + 1);
-      let foreground = 0;
-      let sampleCount = 0;
-
-      for (let sampleY = top; sampleY <= bottom; sampleY += 1) {
-        const row = sampleY * width;
-        for (let sampleX = left; sampleX <= right; sampleX += 1) {
-          sampleCount += 1;
-          if ((source[row + sampleX] ?? 0) !== 0) {
-            foreground += 1;
-          }
-        }
-      }
-
-      output[y * width + x] = foreground >= Math.ceil(sampleCount / 2) ? 1 : 0;
-    }
-  }
-
-  return output;
+function clamp01(value: number) {
+  return Math.max(0, Math.min(1, value));
 }
 
 export class MaskProcessor {
@@ -58,18 +32,10 @@ export class MaskProcessor {
       if (branch.kind !== 'human') continue;
 
       const sourceConfidence = branch.confidenceMask;
-      const threshold = sourceConfidence ? 0.6 : 0.5;
-      const binaryMask = new Uint8Array(branch.categoryMask.length);
-
       for (let i = 0; i < pixelCount; i += 1) {
-        const confidence = sourceConfidence ? Math.max(0, Math.min(1, sourceConfidence[i] ?? 0)) : (branch.categoryMask[i] ?? 0);
+        const confidence = sourceConfidence ? clamp01(sourceConfidence[i] ?? 0) : ((branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0);
+        alphaMask[i] = Math.max(alphaMask[i], confidence);
         confidenceMask[i] = Math.max(confidenceMask[i], confidence);
-        binaryMask[i] = confidence >= threshold ? 1 : 0;
-      }
-
-      const cleanedMask = cleanBinaryMask(binaryMask, branch.width, branch.height);
-      for (let i = 0; i < pixelCount; i += 1) {
-        alphaMask[i] = cleanedMask[i] ? 1 : alphaMask[i];
       }
     }
 
