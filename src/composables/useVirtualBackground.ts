@@ -3,12 +3,12 @@ import type { BackgroundSource, EngineState, VirtualBackgroundTuning } from '@/t
 import { BackgroundEngine } from '@/core/BackgroundEngine';
 
 const defaultTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.8,
+  temporalAlpha: 0.62,
   bilateralSigmaSpatial: 4,
   bilateralSigmaColor: 0.1,
-  feather: 0.08,
+  feather: 0.05,
   lightWrap: 0.15,
-  confidenceBoost: 1,
+  confidenceBoost: 0.9,
   motionBoost: 1,
   brightnessBoost: 1.3
 };

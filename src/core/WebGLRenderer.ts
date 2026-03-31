@@ -374,7 +374,7 @@ export class WebGLRenderer {
   }
 
   private runCompositePass(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !this.confidenceTexture || !backgroundTexture) return;
+    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !backgroundTexture) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
@@ -382,7 +382,6 @@ export class WebGLRenderer {
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
     this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
     this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
-    this.setTexture(this.compositeProgram, 'u_confidence', this.confidenceTexture, 3);
     this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
     this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

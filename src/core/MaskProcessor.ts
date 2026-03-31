@@ -37,20 +37,27 @@ export class MaskProcessor {
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i] ?? 0) : ((branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0);
         const boostedConfidence = sourceConfidence ? clamp01(Math.pow(confidence, 1 / confidenceBoost)) : confidence;
         alphaMask[i] = Math.max(alphaMask[i], boostedConfidence);
-        confidenceMask[i] = Math.max(confidenceMask[i], confidence);
+        confidenceMask[i] = Math.max(confidenceMask[i], boostedConfidence);
       }
     }
 
     let motionMagnitude = 0;
     const previousAlphaMask = this.previousAlphaMask;
     if (previousAlphaMask && previousAlphaMask.length === pixelCount) {
-      let changedPixels = 0;
+      let diffSum = 0;
+      let activeDiffSum = 0;
+      let activePixels = 0;
       for (let i = 0; i < pixelCount; i += 1) {
-        if ((alphaMask[i] > 0.5) !== (previousAlphaMask[i] > 0.5)) {
-          changedPixels += 1;
+        const current = alphaMask[i];
+        const previous = previousAlphaMask[i];
+        const diff = Math.abs(current - previous);
+        diffSum += diff;
+        if (current > 0.05 || previous > 0.05) {
+          activeDiffSum += diff;
+          activePixels += 1;
         }
       }
-      motionMagnitude = changedPixels / pixelCount;
+      motionMagnitude = activePixels > 0 ? activeDiffSum / activePixels : diffSum / pixelCount;
     }
 
     let foregroundPixels = 0;

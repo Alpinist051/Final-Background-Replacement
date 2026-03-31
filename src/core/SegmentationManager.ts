@@ -40,7 +40,7 @@ type SegmenterSlot = {
 
 type HumanSlot = PoseSlot | SegmenterSlot;
 
-function extractBinaryMask(mask: MPMask | undefined): Uint8Array | undefined {
+function extractBinaryMask(mask: MPMask | undefined, floatThreshold = 0.5): Uint8Array | undefined {
   if (!mask) return undefined;
 
   if (mask.hasUint8Array()) {
@@ -55,7 +55,7 @@ function extractBinaryMask(mask: MPMask | undefined): Uint8Array | undefined {
   const source = mask.getAsFloat32Array();
   const output = new Uint8Array(source.length);
   for (let i = 0; i < source.length; i += 1) {
-    output[i] = (source[i] ?? 0) > 0 ? 1 : 0;
+    output[i] = (source[i] ?? 0) >= floatThreshold ? 1 : 0;
   }
   return output;
 }
@@ -76,13 +76,28 @@ function resampleFloatMask(
   if (sourceWidth === targetWidth && sourceHeight === targetHeight) return source;
 
   const output = new Float32Array(targetWidth * targetHeight);
+  const maxSourceX = sourceWidth - 1;
+  const maxSourceY = sourceHeight - 1;
   for (let y = 0; y < targetHeight; y += 1) {
-    const sourceY = Math.min(sourceHeight - 1, Math.floor((y + 0.5) * sourceHeight / targetHeight));
-    const sourceRow = sourceY * sourceWidth;
+    const sourceY = Math.max(0, Math.min(maxSourceY, ((y + 0.5) * sourceHeight / targetHeight) - 0.5));
+    const y0 = Math.floor(sourceY);
+    const y1 = Math.min(maxSourceY, y0 + 1);
+    const yLerp = sourceY - y0;
     const targetRow = y * targetWidth;
     for (let x = 0; x < targetWidth; x += 1) {
-      const sourceX = Math.min(sourceWidth - 1, Math.floor((x + 0.5) * sourceWidth / targetWidth));
-      output[targetRow + x] = source[sourceRow + sourceX] ?? 0;
+      const sourceX = Math.max(0, Math.min(maxSourceX, ((x + 0.5) * sourceWidth / targetWidth) - 0.5));
+      const x0 = Math.floor(sourceX);
+      const x1 = Math.min(maxSourceX, x0 + 1);
+      const xLerp = sourceX - x0;
+
+      const topLeft = source[y0 * sourceWidth + x0] ?? 0;
+      const topRight = source[y0 * sourceWidth + x1] ?? 0;
+      const bottomLeft = source[y1 * sourceWidth + x0] ?? 0;
+      const bottomRight = source[y1 * sourceWidth + x1] ?? 0;
+
+      const top = topLeft + (topRight - topLeft) * xLerp;
+      const bottom = bottomLeft + (bottomRight - bottomLeft) * xLerp;
+      output[targetRow + x] = top + (bottom - top) * yLerp;
     }
   }
   return output;
@@ -265,10 +280,12 @@ export class SegmentationManager {
         throw new Error('Pose landmarker failed to return a segmentation mask.');
       }
 
+      const maskWidth = segmentationMask.width;
+      const maskHeight = segmentationMask.height;
       const categoryMask = extractBinaryMask(segmentationMask);
       const confidenceMask = extractMaskFloats(segmentationMask);
-      const resizedCategoryMask = resampleCategoryMask(categoryMask ?? new Uint8Array(sourceWidth * sourceHeight), sourceWidth, sourceHeight, outputWidth, outputHeight);
-      const resizedConfidenceMask = resampleFloatMask(confidenceMask, sourceWidth, sourceHeight, outputWidth, outputHeight);
+      const resizedCategoryMask = resampleCategoryMask(categoryMask ?? new Uint8Array(maskWidth * maskHeight), maskWidth, maskHeight, outputWidth, outputHeight);
+      const resizedConfidenceMask = resampleFloatMask(confidenceMask, maskWidth, maskHeight, outputWidth, outputHeight);
 
       result.segmentationMasks?.forEach((mask) => mask.close());
 
@@ -283,9 +300,17 @@ export class SegmentationManager {
       throw new Error('MediaPipe failed to return a human category mask.');
     }
 
-    const resizedCategoryMask = resampleCategoryMask(categoryMask, sourceWidth, sourceHeight, outputWidth, outputHeight);
+    const categoryWidth = result.categoryMask.width;
+    const categoryHeight = result.categoryMask.height;
+    const resizedCategoryMask = resampleCategoryMask(categoryMask, categoryWidth, categoryHeight, outputWidth, outputHeight);
     const resizedConfidenceMask = confidenceMask
-      ? resampleFloatMask(extractMaskFloats(confidenceMask), sourceWidth, sourceHeight, outputWidth, outputHeight)
+      ? resampleFloatMask(
+        extractMaskFloats(confidenceMask),
+        confidenceMask.width,
+        confidenceMask.height,
+        outputWidth,
+        outputHeight
+      )
       : undefined;
 
     result.categoryMask?.close();

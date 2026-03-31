@@ -54,19 +54,19 @@ type QualityTier = {
 };
 
 const QUALITY_TIERS: QualityTier[] = [
-  { maxWidth: 1280, maxHeight: 720, temporalAlpha: 0.7 },
-  { maxWidth: 960, maxHeight: 540, temporalAlpha: 0.76 },
-  { maxWidth: 768, maxHeight: 432, temporalAlpha: 0.82 },
-  { maxWidth: 640, maxHeight: 360, temporalAlpha: 0.88 }
+  { maxWidth: 1280, maxHeight: 720, temporalAlpha: 0.62 },
+  { maxWidth: 960, maxHeight: 540, temporalAlpha: 0.68 },
+  { maxWidth: 768, maxHeight: 432, temporalAlpha: 0.74 },
+  { maxWidth: 640, maxHeight: 360, temporalAlpha: 0.8 }
 ];
 
 let currentTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.76,
+  temporalAlpha: 0.62,
   bilateralSigmaSpatial: 4,
   bilateralSigmaColor: 0.1,
-  feather: 0.08,
+  feather: 0.05,
   lightWrap: 0.15,
-  confidenceBoost: 1,
+  confidenceBoost: 0.9,
   motionBoost: 1,
   brightnessBoost: 1
 };
@@ -239,9 +239,9 @@ async function processTick() {
 
   const combinedMotion = Math.max(motion, processedMask.motionMagnitude);
   const adaptiveTemporalAlpha = clamp(
-    tuning.temporalAlpha * (1 - combinedMotion * tuning.motionBoost * 0.35),
-    0.62,
-    0.86
+    tuning.temporalAlpha - combinedMotion * tuning.motionBoost * 0.18,
+    0.48,
+    0.8
   );
   const renderStart = performance.now();
 

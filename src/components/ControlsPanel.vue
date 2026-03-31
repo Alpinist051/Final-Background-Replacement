@@ -97,12 +97,12 @@ const emit = defineEmits<{
 }>();
 
 const controls = computed(() => [
-  { key: 'temporalAlpha', label: 'Temporal alpha', min: 0.75, max: 0.9, step: 0.01, type: 'range', value: props.modelValue.temporalAlpha },
+  { key: 'temporalAlpha', label: 'Temporal alpha', min: 0.55, max: 0.8, step: 0.01, type: 'range', value: props.modelValue.temporalAlpha },
   { key: 'bilateralSigmaSpatial', label: 'Bilateral sigma spatial', min: 1, max: 8, step: 0.1, type: 'range', value: props.modelValue.bilateralSigmaSpatial },
   { key: 'bilateralSigmaColor', label: 'Bilateral sigma color', min: 0.05, max: 0.4, step: 0.01, type: 'range', value: props.modelValue.bilateralSigmaColor },
-  { key: 'feather', label: 'Feather', min: 0.02, max: 0.2, step: 0.005, type: 'range', value: props.modelValue.feather },
+  { key: 'feather', label: 'Feather', min: 0.02, max: 0.12, step: 0.005, type: 'range', value: props.modelValue.feather },
   { key: 'lightWrap', label: 'Light wrap', min: 0, max: 0.4, step: 0.01, type: 'range', value: props.modelValue.lightWrap },
-  { key: 'confidenceBoost', label: 'Confidence boost', min: 0.8, max: 2, step: 0.05, type: 'range', value: props.modelValue.confidenceBoost },
+  { key: 'confidenceBoost', label: 'Confidence boost', min: 0.7, max: 1.5, step: 0.05, type: 'range', value: props.modelValue.confidenceBoost },
   { key: 'motionBoost', label: 'Motion boost', min: 1, max: 2, step: 0.05, type: 'range', value: props.modelValue.motionBoost },
   { key: 'brightnessBoost', label: 'Brightness boost', min: 1, max: 2, step: 0.05, type: 'range', value: props.modelValue.brightnessBoost }
 ]);

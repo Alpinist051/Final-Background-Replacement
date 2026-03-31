@@ -15,7 +15,7 @@ float gaussian(float x, float sigma) {
 }
 
 void main() {
-  const int RADIUS = 2;
+  const int RADIUS = 1;
   vec3 centerColor = texture(u_image, v_uv).rgb;
   float centerMask = texture(u_mask, v_uv).r;
   float sigmaSpatial = max(u_sigmaSpatial, 0.0001);
