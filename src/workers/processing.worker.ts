@@ -83,7 +83,7 @@ let currentTuning: VirtualBackgroundTuning = {
   bilateralSigmaColor: 0,
   feather: 0,
   lightWrap: 0,
-  confidenceBoost: 1,
+  confidenceBoost: 1.15,
   motionBoost: 0,
   brightnessBoost: 1
 };
@@ -343,7 +343,7 @@ async function processTick() {
   const segmentation = await segmenter.segment(processedBitmap, Math.round(frameStart));
   const segmentationMs = performance.now() - segmentationStart;
   const tuning = { ...currentTuning };
-  const processedMask = maskProcessor.process(segmentation);
+  const processedMask = maskProcessor.process(segmentation, currentTuning);
   const rawBranch = segmentation.branches[0];
   const rawMask = rawBranch?.confidenceMask ?? Float32Array.from(rawBranch?.categoryMask ?? new Uint8Array(processedMask.alphaMask.length), (value) => (value ?? 0) > 0 ? 1 : 0);
   const rawMaskSummary = summarizeMask(rawMask, 0.65);

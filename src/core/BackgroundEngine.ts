@@ -70,7 +70,7 @@ export class BackgroundEngine {
     bilateralSigmaColor: 0,
     feather: 0,
     lightWrap: 0,
-    confidenceBoost: 1,
+    confidenceBoost: 1.15,
     motionBoost: 0,
     brightnessBoost: 1
   };

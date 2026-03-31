@@ -9,9 +9,14 @@ export interface ProcessedMask {
   confidenceMean: number;
 }
 
-// Lower blend weights preserve more of the previous frame and reduce flicker.
-const ALPHA_RISE_WEIGHT = 0.34;
-const ALPHA_FALL_WEIGHT = 0.64;
+// Favor the current frame on rising edges so the person stays visible,
+// but keep a little memory on falling edges to reduce flicker.
+const ALPHA_RISE_WEIGHT = 0.82;
+const ALPHA_FALL_WEIGHT = 0.46;
+const PERSON_ALPHA_FLOOR = 0.48;
+const PERSON_FILL_RADIUS = 2;
+const PERSON_FILL_THRESHOLD = 0.18;
+const PERSON_FILL_STRENGTH = 1;
 
 function createFloatBuffer(length: number, fill = 0) {
   const buffer = new Float32Array(length);
@@ -26,11 +31,12 @@ function clamp01(value: number) {
 export class MaskProcessor {
   private previousAlphaMask: Float32Array | null = null;
 
-  process(result: SegmentationFrameResult, _tuning?: Pick<VirtualBackgroundTuning, 'confidenceBoost'>): ProcessedMask {
+  process(result: SegmentationFrameResult, tuning?: Pick<VirtualBackgroundTuning, 'confidenceBoost'>): ProcessedMask {
     const { width, height, branches } = result;
     const pixelCount = width * height;
     const alphaMask = createFloatBuffer(pixelCount);
     const confidenceMask = createFloatBuffer(pixelCount);
+    const confidenceBoost = Math.max(1, tuning?.confidenceBoost ?? 1);
 
     for (const branch of branches) {
       if (branch.kind !== 'human') continue;
@@ -41,7 +47,10 @@ export class MaskProcessor {
         const confidence = sourceConfidence
           ? clamp01(sourceConfidence[i] ?? 0)
           : categoryValue;
-        const personValue = categoryValue ? confidence : 0;
+        const boostedConfidence = clamp01(confidence * confidenceBoost);
+        const personValue = sourceConfidence
+          ? clamp01(Math.max(boostedConfidence, categoryValue ? PERSON_ALPHA_FLOOR : 0))
+          : categoryValue;
         const previousValue = this.previousAlphaMask?.[i] ?? 0;
         const targetValue = personValue;
         const blendWeight = targetValue >= previousValue ? ALPHA_RISE_WEIGHT : ALPHA_FALL_WEIGHT;
@@ -52,11 +61,32 @@ export class MaskProcessor {
       }
     }
 
+    const refinedAlphaMask = createFloatBuffer(pixelCount);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        let localMax = 0;
+        for (let offsetY = -PERSON_FILL_RADIUS; offsetY <= PERSON_FILL_RADIUS; offsetY += 1) {
+          const sampleY = Math.max(0, Math.min(height - 1, y + offsetY));
+          const rowOffset = sampleY * width;
+          for (let offsetX = -PERSON_FILL_RADIUS; offsetX <= PERSON_FILL_RADIUS; offsetX += 1) {
+            const sampleX = Math.max(0, Math.min(width - 1, x + offsetX));
+            const sampleValue = alphaMask[rowOffset + sampleX] ?? 0;
+            if (sampleValue > localMax) localMax = sampleValue;
+          }
+        }
+
+        const index = y * width + x;
+        const currentValue = alphaMask[index] ?? 0;
+        const fillValue = localMax >= PERSON_FILL_THRESHOLD ? localMax * PERSON_FILL_STRENGTH : currentValue;
+        refinedAlphaMask[index] = Math.max(currentValue, fillValue);
+      }
+    }
+
     let motionMagnitude = 0;
     if (this.previousAlphaMask && this.previousAlphaMask.length === pixelCount) {
       let diffSum = 0;
       for (let i = 0; i < pixelCount; i += 1) {
-        diffSum += Math.abs(alphaMask[i] - this.previousAlphaMask[i]);
+        diffSum += Math.abs(refinedAlphaMask[i] - this.previousAlphaMask[i]);
       }
       motionMagnitude = diffSum / pixelCount;
     }
@@ -65,17 +95,17 @@ export class MaskProcessor {
     let maskSum = 0;
     let confidenceSum = 0;
     for (let i = 0; i < pixelCount; i += 1) {
-      const alpha = alphaMask[i];
+      const alpha = refinedAlphaMask[i];
       const confidence = confidenceMask[i];
       if (alpha > 0.5) foregroundPixels += 1;
       maskSum += alpha;
       confidenceSum += confidence;
     }
 
-    this.previousAlphaMask = new Float32Array(alphaMask);
+    this.previousAlphaMask = new Float32Array(refinedAlphaMask);
 
     return {
-      alphaMask,
+      alphaMask: refinedAlphaMask,
       confidenceMask,
       motionMagnitude,
       foregroundRatio: foregroundPixels / pixelCount,
