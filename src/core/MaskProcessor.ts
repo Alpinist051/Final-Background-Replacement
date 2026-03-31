@@ -37,7 +37,7 @@ export class MaskProcessor {
         const confidence = sourceConfidence ? clamp01(sourceConfidence[i] ?? 0) : ((branch.categoryMask[i] ?? 0) !== 0 ? 1 : 0);
         const boostedConfidence = sourceConfidence ? clamp01(Math.pow(confidence, 1 / confidenceBoost)) : confidence;
         alphaMask[i] = Math.max(alphaMask[i], boostedConfidence);
-        confidenceMask[i] = Math.max(confidenceMask[i], boostedConfidence);
+        confidenceMask[i] = Math.max(confidenceMask[i], confidence);
       }
     }
 

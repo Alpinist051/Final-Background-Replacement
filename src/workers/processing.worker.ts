@@ -66,7 +66,7 @@ let currentTuning: VirtualBackgroundTuning = {
   bilateralSigmaColor: 0.1,
   feather: 0.08,
   lightWrap: 0.15,
-  confidenceBoost: 1.2,
+  confidenceBoost: 1,
   motionBoost: 1,
   brightnessBoost: 1
 };

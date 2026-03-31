@@ -126,6 +126,7 @@ export class WebGLRenderer {
   private backgroundTexture: WebGLTexture | null = null;
   private blurTexture: WebGLTexture | null = null;
   private currentMaskTexture: WebGLTexture | null = null;
+  private confidenceTexture: WebGLTexture | null = null;
   private previousMaskTexture: WebGLTexture | null = null;
   private temporalTexture: WebGLTexture | null = null;
   private finalMaskTexture: WebGLTexture | null = null;
@@ -192,6 +193,7 @@ export class WebGLRenderer {
     this.backgroundTexture = createTexture(gl, width, height);
     this.blurTexture = createTexture(gl, width, height);
     this.currentMaskTexture = createTexture(gl, width, height, gl.R8);
+    this.confidenceTexture = createTexture(gl, width, height, gl.R8);
     this.previousMaskTexture = createTexture(gl, width, height, gl.R8);
     this.temporalTexture = createTexture(gl, width, height, gl.R8);
     this.finalMaskTexture = createTexture(gl, width, height, gl.R8);
@@ -231,16 +233,17 @@ export class WebGLRenderer {
       return;
     }
 
-    const { frame, alphaMask, backgroundFrame, tuning } = args;
+    const { frame, alphaMask, confidenceMask, backgroundFrame, tuning } = args;
     const gl = this.gl;
     this.resize(frame.width, frame.height);
 
-    if (!this.sourceTexture || !this.backgroundTexture || !this.blurTexture || !this.currentMaskTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
+    if (!this.sourceTexture || !this.backgroundTexture || !this.blurTexture || !this.currentMaskTexture || !this.confidenceTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
       return;
     }
 
     uploadBitmap(gl, this.sourceTexture, frame);
     uploadMask(gl, this.currentMaskTexture, alphaMask, frame.width, frame.height);
+    uploadMask(gl, this.confidenceTexture, confidenceMask, frame.width, frame.height);
 
     switch (this.backgroundMode) {
       case 'solid':
@@ -269,7 +272,7 @@ export class WebGLRenderer {
 
   private renderWithMaskAndComposite(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
     this.runTemporalPass(tuning);
-    this.runBilateralPass();
+    this.runBilateralPass(tuning);
     this.runCompositePass(backgroundTexture, tuning);
   }
 
@@ -339,21 +342,25 @@ export class WebGLRenderer {
   }
 
   private runTemporalPass(tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.temporalProgram || !this.temporalTexture) return;
+    if (!this.gl || !this.temporalProgram || !this.temporalTexture || !this.confidenceTexture) return;
     this.drawToTexture(this.temporalTexture, this.temporalProgram, () => {
       this.bindQuad(this.temporalProgram as WebGLProgram);
       this.setTexture(this.temporalProgram as WebGLProgram, 'u_prevMask', this.previousMaskTexture, 0);
       this.setTexture(this.temporalProgram as WebGLProgram, 'u_currentMask', this.currentMaskTexture, 1);
+      this.setTexture(this.temporalProgram as WebGLProgram, 'u_currentConfidence', this.confidenceTexture, 2);
       this.setFloat(this.temporalProgram as WebGLProgram, 'u_alpha', tuning.temporalAlpha);
     });
   }
 
-  private runBilateralPass() {
-    if (!this.gl || !this.bilateralProgram || !this.temporalTexture || !this.finalMaskTexture) return;
+  private runBilateralPass(tuning: VirtualBackgroundTuning) {
+    if (!this.gl || !this.bilateralProgram || !this.temporalTexture || !this.finalMaskTexture || !this.sourceTexture) return;
     this.drawToTexture(this.finalMaskTexture, this.bilateralProgram, () => {
       this.bindQuad(this.bilateralProgram as WebGLProgram);
       this.setTexture(this.bilateralProgram as WebGLProgram, 'u_mask', this.temporalTexture, 0);
+      this.setTexture(this.bilateralProgram as WebGLProgram, 'u_image', this.sourceTexture, 1);
       this.setVec2(this.bilateralProgram as WebGLProgram, 'u_texelSize', 1 / this.width, 1 / this.height);
+      this.setFloat(this.bilateralProgram as WebGLProgram, 'u_sigmaSpatial', tuning.bilateralSigmaSpatial);
+      this.setFloat(this.bilateralProgram as WebGLProgram, 'u_sigmaColor', tuning.bilateralSigmaColor);
     });
   }
 
@@ -367,7 +374,7 @@ export class WebGLRenderer {
   }
 
   private runCompositePass(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !backgroundTexture) return;
+    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !this.confidenceTexture || !backgroundTexture) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
@@ -375,6 +382,7 @@ export class WebGLRenderer {
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
     this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
     this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
+    this.setTexture(this.compositeProgram, 'u_confidence', this.confidenceTexture, 3);
     this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
     this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

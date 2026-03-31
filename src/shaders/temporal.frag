@@ -3,6 +3,7 @@ precision highp float;
 
 uniform sampler2D u_prevMask;
 uniform sampler2D u_currentMask;
+uniform sampler2D u_currentConfidence;
 uniform float u_alpha;
 in vec2 v_uv;
 out vec4 outColor;
@@ -10,6 +11,11 @@ out vec4 outColor;
 void main() {
   float prevValue = texture(u_prevMask, v_uv).r;
   float currentValue = texture(u_currentMask, v_uv).r;
-  float maskValue = mix(prevValue, currentValue, clamp(u_alpha, 0.0, 1.0));
+  float confidence = texture(u_currentConfidence, v_uv).r;
+  float change = abs(currentValue - prevValue);
+  float changeBias = smoothstep(0.04, 0.20, change);
+  float confidenceBias = 1.0 - smoothstep(0.35, 0.80, confidence);
+  float currentWeight = clamp(u_alpha + changeBias * 0.20 + confidenceBias * 0.12, 0.0, 1.0);
+  float maskValue = mix(prevValue, currentValue, currentWeight);
   outColor = vec4(maskValue, maskValue, maskValue, 1.0);
 }
