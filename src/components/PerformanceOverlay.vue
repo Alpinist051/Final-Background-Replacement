@@ -13,7 +13,7 @@
       <strong>{{ stats.latencyMs.toFixed(1) }} ms</strong>
     </div>
     <div>
-      <span>Segmentation</span>
+      <span>Human mask</span>
       <strong>{{ stats.segmentationMs.toFixed(1) }} ms</strong>
     </div>
     <div>

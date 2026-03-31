@@ -274,7 +274,7 @@ async function processTick() {
 
   if ((processedMask.foregroundRatio < 0.01 || processedMask.foregroundRatio > 0.99) && performance.now() - lastMaskWarningAt > 3000) {
     lastMaskWarningAt = performance.now();
-    console.warn(`Foreground mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage)`);
+    console.warn(`Human mask looks suspicious (${(processedMask.foregroundRatio * 100).toFixed(1)}% coverage)`);
   }
 
   const renderArgs: RenderFrameArgs = {

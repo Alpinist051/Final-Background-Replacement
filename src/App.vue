@@ -2,10 +2,10 @@
   <main class="app-shell">
     <section class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Browser-only background replacement</p>
+        <p class="eyebrow">Browser-only human segmentation</p>
         <h1>Virtual background engine</h1>
         <p class="lede">
-          MediaPipe multi-person semantic segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
+          MediaPipe selfie segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
         </p>
       </div>
       <div class="hero-metrics">
