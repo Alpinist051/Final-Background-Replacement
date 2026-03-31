@@ -179,7 +179,7 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 400px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
@@ -189,20 +189,13 @@ button {
   gap: 12px;
 }
 
-.right-column {
-  position: sticky;
-  top: 16px;
-  align-self: start;
-}
-
 .control-grid {
   display: grid;
   gap: 12px;
 }
 
 .panel,
-.preview-panel,
-.overlay {
+.preview-panel {
   border: 1px solid var(--line);
   border-radius: 28px;
   background:
@@ -292,11 +285,6 @@ button {
   font-size: 0.92rem;
 }
 
-.field input[type='range'] {
-  width: 100%;
-}
-
-.field input[type='color'],
 .field select,
 .field input[type='file'] {
   width: 100%;
@@ -328,94 +316,9 @@ button {
   min-width: 220px;
 }
 
-.inline-color {
-  width: 132px;
-}
-
-.inline-file {
-  width: 180px;
-}
-
-.inline-range {
-  flex: 1 1 220px;
-  min-width: 180px;
-}
-
 .inline-field input,
 .inline-field select {
   margin: 0;
-}
-
-.scene-controls {
-  align-items: end;
-}
-
-.compact-actions {
-  flex: 0 1 auto;
-}
-
-.compact-hint {
-  margin-top: 10px;
-}
-
-.mini-overlay {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-  position: relative;
-  z-index: 1;
-}
-
-.mini-overlay div {
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 10px 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
-    rgba(255, 255, 255, 0.03);
-  display: grid;
-  gap: 4px;
-}
-
-.mini-overlay span {
-  color: var(--muted);
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.mini-overlay strong {
-  font-size: 0.95rem;
-}
-
-.debug-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-  padding: 12px;
-  border: 1px dashed rgba(103, 232, 249, 0.24);
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.03);
-  position: relative;
-  z-index: 1;
-}
-
-.debug-strip div {
-  display: grid;
-  gap: 4px;
-}
-
-.debug-strip span {
-  color: var(--muted);
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.debug-strip strong {
-  font-size: 0.92rem;
 }
 
 .button-row {
@@ -428,8 +331,7 @@ button {
 
 .primary,
 .secondary,
-.ghost,
-.chip {
+.ghost {
   border-radius: 14px;
   padding: 10px 14px;
   transition:
@@ -447,8 +349,7 @@ button {
 }
 
 .secondary,
-.ghost,
-.chip {
+.ghost {
   background: rgba(255, 255, 255, 0.04);
   color: var(--text);
   border: 1px solid var(--line);
@@ -456,16 +357,9 @@ button {
 
 .primary:hover,
 .secondary:hover,
-.ghost:hover,
-.chip:hover {
+.ghost:hover {
   transform: translateY(-1px);
   border-color: rgba(103, 232, 249, 0.4);
-}
-
-.chip.active {
-  border-color: rgba(103, 232, 249, 0.62);
-  background: rgba(103, 232, 249, 0.14);
-  box-shadow: 0 8px 24px rgba(103, 232, 249, 0.12);
 }
 
 .preview-canvas {
@@ -480,32 +374,6 @@ button {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
     0 18px 40px rgba(0, 0, 0, 0.36);
-}
-
-.overlay {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
-    var(--glass);
-}
-
-.overlay div {
-  display: grid;
-  gap: 4px;
-}
-
-.overlay span {
-  color: var(--muted);
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.overlay strong {
-  font-size: 0.95rem;
 }
 
 .error {
@@ -529,16 +397,6 @@ button {
   color: var(--muted);
 }
 
-.field input[type='range'] {
-  accent-color: var(--accent);
-  filter: drop-shadow(0 0 10px rgba(103, 232, 249, 0.15));
-}
-
-.field input[type='color'] {
-  padding: 5px;
-  min-height: 44px;
-}
-
 .field input[type='file'] {
   padding: 9px 12px;
 }
@@ -548,8 +406,6 @@ button {
 }
 
 .field strong,
-.overlay strong,
-.mini-overlay strong,
 .metric-card strong {
   letter-spacing: 0.01em;
 }
@@ -565,18 +421,6 @@ button {
 
   .workspace {
     grid-template-columns: 1fr;
-  }
-
-  .right-column {
-    position: static;
-  }
-
-  .overlay {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .mini-overlay {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .preview-canvas {
@@ -596,18 +440,13 @@ button {
     border-radius: 24px;
   }
 
-  .mini-overlay {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .button-row {
     gap: 8px;
   }
 
   .primary,
   .secondary,
-  .ghost,
-  .chip {
+  .ghost {
     width: 100%;
     justify-content: center;
   }

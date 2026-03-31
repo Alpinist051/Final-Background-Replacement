@@ -1,11 +1,11 @@
-import type { BackgroundSource, EngineStats, QualityUpdate, VirtualBackgroundTuning } from '@/types/engine';
+import type { EngineStats, ImageBackground, QualityUpdate, VirtualBackgroundTuning } from '@/types/engine';
 import { loadImageBitmap } from '@/utils/canvasUtils';
+import { DEFAULT_BACKGROUND } from '@/constants/defaultBackground';
 
 type EngineCallbacks = {
   onStats?: (stats: EngineStats) => void;
   onError?: (error: string) => void;
   onStatus?: (status: 'idle' | 'starting' | 'running' | 'stopping' | 'error') => void;
-  onQuality?: (quality: QualityUpdate) => void;
 };
 
 type WorkerEnvelope =
@@ -15,19 +15,8 @@ type WorkerEnvelope =
   | { type: 'quality'; quality: QualityUpdate }
   | { type: 'error'; error: string };
 
-function cloneBackgroundSource(background: BackgroundSource): BackgroundSource {
-  switch (background.mode) {
-    case 'solid':
-      return { mode: 'solid', color: background.color };
-    case 'image':
-      return { mode: 'image', url: background.url, label: background.label };
-    case 'video':
-      return { mode: 'video', url: background.url, label: background.label, loop: background.loop };
-    case 'blur':
-      return { mode: 'blur', strength: background.strength };
-    default:
-      return background;
-  }
+function cloneBackgroundImage(background: ImageBackground): ImageBackground {
+  return { mode: 'image', url: background.url, label: background.label };
 }
 
 function cloneTuning(tuning: VirtualBackgroundTuning): VirtualBackgroundTuning {
@@ -49,28 +38,25 @@ export class BackgroundEngine {
   private readonly callbacks: EngineCallbacks;
   private worker: Worker | null = null;
   private cameraStream: MediaStream | null = null;
-  private backgroundVideo: HTMLVideoElement | null = null;
-  private backgroundVideoTransferWarningShown = false;
   private backgroundRevision = 0;
   private offscreenCanvas: OffscreenCanvas | null = null;
   private canvasTransferred = false;
   private running = false;
   private inFlight = false;
   private queuedFrame = false;
-  private processedStream: MediaStream | null = null;
 
   private tuning: VirtualBackgroundTuning = {
     temporalAlpha: 0.62,
     bilateralSigmaSpatial: 4,
     bilateralSigmaColor: 0.1,
-    feather: 0.05,
-    lightWrap: 0.15,
-    confidenceBoost: 0.9,
+    feather: 0.08,
+    lightWrap: 0.22,
+    confidenceBoost: 1.12,
     motionBoost: 1,
     brightnessBoost: 1.3
   };
 
-  private background: BackgroundSource = { mode: 'solid', color: '#111827' };
+  private background: ImageBackground = { ...DEFAULT_BACKGROUND };
 
   constructor(canvas: HTMLCanvasElement, callbacks: EngineCallbacks = {}) {
     this.canvas = canvas;
@@ -104,8 +90,6 @@ export class BackgroundEngine {
     const width = this.videoElement.videoWidth || 1280;
     const height = this.videoElement.videoHeight || 720;
 
-    this.processedStream ??= this.canvas.captureStream(30);
-
     if (!this.canvasTransferred) {
       this.canvas.width = width;
       this.canvas.height = height;
@@ -115,8 +99,7 @@ export class BackgroundEngine {
         canvas: this.offscreenCanvas,
         width,
         height,
-        tuning: cloneTuning(this.tuning),
-        background: cloneBackgroundSource(this.background)
+        tuning: cloneTuning(this.tuning)
       }, [this.offscreenCanvas]);
       this.canvasTransferred = true;
     } else {
@@ -124,25 +107,16 @@ export class BackgroundEngine {
       this.worker!.postMessage({ type: 'tuning', tuning: cloneTuning(this.tuning) });
     }
 
-    void this.syncBackgroundToWorker();
+    await this.syncBackgroundToWorker();
 
     this.running = true;
     this.callbacks.onStatus?.('running');
     this.scheduleNextPump();
   }
 
-  setTuning(tuning: VirtualBackgroundTuning) {
-    this.tuning = cloneTuning(tuning);
-    this.worker?.postMessage({ type: 'tuning', tuning: cloneTuning(this.tuning) });
-  }
-
-  async setBackground(background: BackgroundSource) {
-    this.background = cloneBackgroundSource(background);
+  async setBackground(background: ImageBackground) {
+    this.background = cloneBackgroundImage(background);
     await this.syncBackgroundToWorker();
-  }
-
-  getProcessedTrack() {
-    return this.processedStream?.getVideoTracks()[0] ?? null;
   }
 
   async stop() {
@@ -152,7 +126,6 @@ export class BackgroundEngine {
     this.callbacks.onStatus?.('stopping');
     this.cameraStream?.getTracks().forEach(t => t.stop());
     this.cameraStream = null;
-    this.stopBackgroundVideo();
     this.backgroundRevision += 1;
     this.callbacks.onStatus?.('idle');
   }
@@ -162,7 +135,6 @@ export class BackgroundEngine {
     this.worker?.postMessage({ type: 'stop' });
     this.worker?.terminate();
     this.worker = null;
-    this.processedStream = null;
     this.backgroundRevision += 1;
   }
 
@@ -187,7 +159,6 @@ export class BackgroundEngine {
       }
       if (msg.type === 'quality') {
         this.tuning = { ...this.tuning, temporalAlpha: msg.quality.temporalAlpha };
-        this.callbacks.onQuality?.(msg.quality);
       }
     };
 
@@ -197,55 +168,20 @@ export class BackgroundEngine {
     };
   }
 
-  private stopBackgroundVideo() {
-    this.backgroundVideo?.pause();
-    this.backgroundVideo = null;
-    this.backgroundVideoTransferWarningShown = false;
-  }
-
   private async syncBackgroundToWorker() {
     if (!this.worker) return;
 
     const revision = ++this.backgroundRevision;
-    const background = cloneBackgroundSource(this.background);
 
-    switch (background.mode) {
-      case 'solid':
-      case 'blur':
-        this.stopBackgroundVideo();
-        this.worker.postMessage({ type: 'background', background });
-        return;
-      case 'video': {
-        this.stopBackgroundVideo();
-        const video = document.createElement('video');
-        video.crossOrigin = 'anonymous';
-        video.src = background.url;
-        video.loop = background.loop ?? true;
-        video.autoplay = true;
-        video.muted = true;
-        video.playsInline = true;
-        await video.play().catch(() => { });
-        if (revision !== this.backgroundRevision || !this.worker) {
-          video.pause();
-          return;
-        }
-        this.backgroundVideo = video;
-        this.worker.postMessage({ type: 'background', background });
+    try {
+      const bitmap = await loadImageBitmap(this.background.url);
+      if (revision !== this.backgroundRevision || !this.worker) {
+        bitmap.close();
         return;
       }
-      case 'image':
-        try {
-          this.stopBackgroundVideo();
-          const bitmap = await loadImageBitmap(background.url);
-          if (revision !== this.backgroundRevision || !this.worker) {
-            bitmap.close();
-            return;
-          }
-          this.worker.postMessage({ type: 'background', background, bitmap }, [bitmap]);
-        } catch (error) {
-          this.callbacks.onError?.(error instanceof Error ? error.message : 'Failed to load background image');
-        }
-        return;
+      this.worker.postMessage({ type: 'background', bitmap }, [bitmap]);
+    } catch (error) {
+      this.callbacks.onError?.(error instanceof Error ? error.message : 'Failed to load background image');
     }
   }
 
@@ -260,25 +196,10 @@ export class BackgroundEngine {
 
     this.inFlight = true;
     const frame = await createImageBitmap(this.videoElement);
-    let backgroundFrame: ImageBitmap | null = null;
-
-    if (this.background.mode === 'video') {
-      const backgroundVideo = this.backgroundVideo;
-      if (backgroundVideo && backgroundVideo.readyState >= 2) {
-        try {
-          backgroundFrame = await createImageBitmap(backgroundVideo);
-        } catch (error) {
-          if (!this.backgroundVideoTransferWarningShown) {
-            this.backgroundVideoTransferWarningShown = true;
-            console.warn('Video background is not origin-clean, so it cannot be transferred to the worker. Use a CORS-enabled video source or a local file for animated backgrounds.', error);
-          }
-        }
-      }
-    }
 
     this.worker.postMessage(
-      { type: 'frame', frame, timestamp: performance.now(), backgroundFrame },
-      backgroundFrame ? [frame, backgroundFrame] : [frame]
+      { type: 'frame', frame, timestamp: performance.now() },
+      [frame]
     );
 
     this.scheduleNextPump();

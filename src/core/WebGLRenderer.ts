@@ -1,8 +1,7 @@
-import type { BackgroundMode, BackgroundSource, VirtualBackgroundTuning } from '@/types/engine';
+import type { VirtualBackgroundTuning } from '@/types/engine';
 import temporalShaderSource from '@/shaders/temporal.frag?raw';
 import bilateralShaderSource from '@/shaders/bilateral.frag?raw';
 import compositeShaderSource from '@/shaders/composite.frag?raw';
-import blurShaderSource from '@/shaders/blur.frag?raw';
 
 const vertexShaderSource = `#version 300 es
 layout(location = 0) in vec2 a_position;
@@ -12,16 +11,6 @@ void main() {
   v_uv = uv;
   gl_Position = vec4(a_position, 0.0, 1.0);
 }`;
-
-function parseHexColor(value: string) {
-  const hex = value.replace('#', '');
-  const normalized =
-    hex.length === 3 ? hex.split('').map((character) => character + character).join('') : hex.padEnd(6, '0');
-  const red = Number.parseInt(normalized.slice(0, 2), 16) / 255;
-  const green = Number.parseInt(normalized.slice(2, 4), 16) / 255;
-  const blue = Number.parseInt(normalized.slice(4, 6), 16) / 255;
-  return [red, green, blue, 1] as const;
-}
 
 function compileShader(gl: WebGL2RenderingContext, type: number, source: string) {
   const shader = gl.createShader(type);
@@ -105,8 +94,6 @@ export interface RenderFrameArgs {
   frame: ImageBitmap;
   alphaMask: Float32Array;
   confidenceMask: Float32Array;
-  backgroundFrame?: ImageBitmap | null;
-  background?: BackgroundSource;
   tuning: VirtualBackgroundTuning;
 }
 
@@ -117,14 +104,13 @@ export class WebGLRenderer {
   private readonly temporalProgram: WebGLProgram | null;
   private readonly bilateralProgram: WebGLProgram | null;
   private readonly compositeProgram: WebGLProgram | null;
-  private readonly blurProgram: WebGLProgram | null;
   private vao: WebGLVertexArrayObject | null = null;
   private framebuffer: WebGLFramebuffer | null = null;
   private width = 1;
   private height = 1;
   private sourceTexture: WebGLTexture | null = null;
   private backgroundTexture: WebGLTexture | null = null;
-  private blurTexture: WebGLTexture | null = null;
+  private backgroundBitmap: ImageBitmap | null = null;
   private currentMaskTexture: WebGLTexture | null = null;
   private confidenceTexture: WebGLTexture | null = null;
   private previousMaskTexture: WebGLTexture | null = null;
@@ -133,8 +119,6 @@ export class WebGLRenderer {
   private zeroMaskBuffer: Uint8Array | null = null;
   private fallbackCanvas: OffscreenCanvas | null = null;
   private fallbackContext2d: OffscreenCanvasRenderingContext2D | null = null;
-  private background: BackgroundSource = { mode: 'solid', color: '#111827' };
-  private backgroundMode: BackgroundMode = 'solid';
 
   constructor(canvas: OffscreenCanvas) {
     this.canvas = canvas;
@@ -153,7 +137,6 @@ export class WebGLRenderer {
       this.temporalProgram = createProgram(gl, temporalShaderSource);
       this.bilateralProgram = createProgram(gl, bilateralShaderSource);
       this.compositeProgram = createProgram(gl, compositeShaderSource);
-      this.blurProgram = createProgram(gl, blurShaderSource);
       this.framebuffer = gl.createFramebuffer();
       this.initializeGeometry();
       this.allocateTextures(1, 1);
@@ -161,7 +144,6 @@ export class WebGLRenderer {
       this.temporalProgram = null;
       this.bilateralProgram = null;
       this.compositeProgram = null;
-      this.blurProgram = null;
     }
   }
 
@@ -191,12 +173,12 @@ export class WebGLRenderer {
 
     this.sourceTexture = createTexture(gl, width, height);
     this.backgroundTexture = createTexture(gl, width, height);
-    this.blurTexture = createTexture(gl, width, height);
     this.currentMaskTexture = createTexture(gl, width, height, gl.R8);
     this.confidenceTexture = createTexture(gl, width, height, gl.R8);
     this.previousMaskTexture = createTexture(gl, width, height, gl.R8);
     this.temporalTexture = createTexture(gl, width, height, gl.R8);
     this.finalMaskTexture = createTexture(gl, width, height, gl.R8);
+    this.reapplyBackgroundBitmap();
     gl.viewport(0, 0, width, height);
   }
 
@@ -209,35 +191,23 @@ export class WebGLRenderer {
     this.allocateTextures(nextWidth, nextHeight);
   }
 
-  setBackground(background: BackgroundSource) {
-    this.background = background;
-    this.backgroundMode = background.mode;
-    if (!this.gl || !this.backgroundTexture) return;
-
-    if (background.mode === 'solid') {
-      this.applySolidBackground(background.color);
-    }
-  }
-
   setBackgroundBitmap(bitmap: ImageBitmap) {
-    if (!this.gl || !this.backgroundTexture) return;
-    if (this.backgroundMode !== 'image' && this.backgroundMode !== 'video') {
-      return;
-    }
-    uploadBitmap(this.gl, this.backgroundTexture, bitmap);
+    this.backgroundBitmap?.close();
+    this.backgroundBitmap = bitmap;
+    this.reapplyBackgroundBitmap();
   }
 
   async renderFrame(args: RenderFrameArgs) {
-    if (!this.gl || !this.temporalProgram || !this.bilateralProgram || !this.compositeProgram || !this.blurProgram) {
+    if (!this.gl || !this.temporalProgram || !this.bilateralProgram || !this.compositeProgram) {
       this.renderFallback(args);
       return;
     }
 
-    const { frame, alphaMask, confidenceMask, backgroundFrame, tuning } = args;
+    const { frame, alphaMask, confidenceMask, tuning } = args;
     const gl = this.gl;
     this.resize(frame.width, frame.height);
 
-    if (!this.sourceTexture || !this.backgroundTexture || !this.blurTexture || !this.currentMaskTexture || !this.confidenceTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
+    if (!this.sourceTexture || !this.backgroundTexture || !this.currentMaskTexture || !this.confidenceTexture || !this.previousMaskTexture || !this.temporalTexture || !this.finalMaskTexture) {
       return;
     }
 
@@ -245,29 +215,8 @@ export class WebGLRenderer {
     uploadMask(gl, this.currentMaskTexture, alphaMask, frame.width, frame.height);
     uploadMask(gl, this.confidenceTexture, confidenceMask, frame.width, frame.height);
 
-    switch (this.backgroundMode) {
-      case 'solid':
-        this.renderSolidFrame(tuning);
-        break;
-      case 'image':
-        this.renderImageFrame(backgroundFrame, tuning);
-        break;
-      case 'video':
-        this.renderVideoFrame(backgroundFrame, tuning);
-        break;
-      case 'blur':
-        this.renderBlurFrame(tuning);
-        break;
-    }
+    this.renderImageFrame(tuning);
     this.swapMaskTextures();
-  }
-
-  private applySolidBackground(color: string) {
-    if (!this.gl || !this.backgroundTexture) return;
-    const rgba = parseHexColor(color);
-    const bytes = new Uint8Array(rgba.map((value) => Math.round(value * 255)));
-    this.gl.bindTexture(this.gl.TEXTURE_2D, this.backgroundTexture);
-    this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, 1, 1, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, bytes);
   }
 
   private renderWithMaskAndComposite(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
@@ -276,27 +225,8 @@ export class WebGLRenderer {
     this.runCompositePass(backgroundTexture, tuning);
   }
 
-  private renderSolidFrame(tuning: VirtualBackgroundTuning) {
+  private renderImageFrame(tuning: VirtualBackgroundTuning) {
     this.renderWithMaskAndComposite(this.backgroundTexture, tuning);
-  }
-
-  private renderImageFrame(backgroundFrame: ImageBitmap | null | undefined, tuning: VirtualBackgroundTuning) {
-    if (backgroundFrame && this.gl && this.backgroundTexture) {
-      uploadBitmap(this.gl, this.backgroundTexture, backgroundFrame);
-    }
-    this.renderWithMaskAndComposite(this.backgroundTexture, tuning);
-  }
-
-  private renderVideoFrame(backgroundFrame: ImageBitmap | null | undefined, tuning: VirtualBackgroundTuning) {
-    if (backgroundFrame && this.gl && this.backgroundTexture) {
-      uploadBitmap(this.gl, this.backgroundTexture, backgroundFrame);
-    }
-    this.renderWithMaskAndComposite(this.backgroundTexture, tuning);
-  }
-
-  private renderBlurFrame(tuning: VirtualBackgroundTuning) {
-    this.runBlurPass();
-    this.renderWithMaskAndComposite(this.blurTexture, tuning);
   }
 
   private bindQuad(program: WebGLProgram) {
@@ -353,28 +283,20 @@ export class WebGLRenderer {
   }
 
   private runBilateralPass(tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.bilateralProgram || !this.temporalTexture || !this.finalMaskTexture || !this.sourceTexture) return;
+    if (!this.gl || !this.bilateralProgram || !this.temporalTexture || !this.finalMaskTexture || !this.sourceTexture || !this.confidenceTexture) return;
     this.drawToTexture(this.finalMaskTexture, this.bilateralProgram, () => {
       this.bindQuad(this.bilateralProgram as WebGLProgram);
       this.setTexture(this.bilateralProgram as WebGLProgram, 'u_mask', this.temporalTexture, 0);
       this.setTexture(this.bilateralProgram as WebGLProgram, 'u_image', this.sourceTexture, 1);
+      this.setTexture(this.bilateralProgram as WebGLProgram, 'u_confidence', this.confidenceTexture, 2);
       this.setVec2(this.bilateralProgram as WebGLProgram, 'u_texelSize', 1 / this.width, 1 / this.height);
       this.setFloat(this.bilateralProgram as WebGLProgram, 'u_sigmaSpatial', tuning.bilateralSigmaSpatial);
       this.setFloat(this.bilateralProgram as WebGLProgram, 'u_sigmaColor', tuning.bilateralSigmaColor);
     });
   }
 
-  private runBlurPass() {
-    if (!this.gl || !this.blurProgram || !this.blurTexture || !this.sourceTexture) return;
-    this.drawToTexture(this.blurTexture, this.blurProgram, () => {
-      this.bindQuad(this.blurProgram as WebGLProgram);
-      this.setTexture(this.blurProgram as WebGLProgram, 'u_image', this.sourceTexture, 0);
-      this.setVec2(this.blurProgram as WebGLProgram, 'u_texelSize', 1 / this.width, 1 / this.height);
-    });
-  }
-
   private runCompositePass(backgroundTexture: WebGLTexture | null, tuning: VirtualBackgroundTuning) {
-    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !backgroundTexture) return;
+    if (!this.gl || !this.compositeProgram || !this.sourceTexture || !this.finalMaskTexture || !backgroundTexture || !this.confidenceTexture) return;
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.width, this.height);
@@ -382,6 +304,7 @@ export class WebGLRenderer {
     this.setTexture(this.compositeProgram, 'u_person', this.sourceTexture, 0);
     this.setTexture(this.compositeProgram, 'u_background', backgroundTexture, 1);
     this.setTexture(this.compositeProgram, 'u_mask', this.finalMaskTexture, 2);
+    this.setTexture(this.compositeProgram, 'u_confidence', this.confidenceTexture, 3);
     this.setFloat(this.compositeProgram, 'u_feather', tuning.feather);
     this.setFloat(this.compositeProgram, 'u_lightWrap', tuning.lightWrap);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -411,7 +334,7 @@ export class WebGLRenderer {
 
   private renderFallback(args: RenderFrameArgs) {
     if (!this.fallback2d) return;
-    const { frame, alphaMask, backgroundFrame, tuning } = args;
+    const { frame, alphaMask } = args;
     const context = this.fallback2d;
     this.canvas.width = frame.width;
     this.canvas.height = frame.height;
@@ -427,21 +350,13 @@ export class WebGLRenderer {
     context.clearRect(0, 0, frame.width, frame.height);
     tempContext.clearRect(0, 0, frame.width, frame.height);
 
-    const background = this.background;
+    const backgroundBitmap = this.backgroundBitmap;
 
-    if (background.mode === 'solid') {
-      context.fillStyle = background.color;
-      context.fillRect(0, 0, frame.width, frame.height);
-    } else if (this.backgroundMode === 'image' || this.backgroundMode === 'video') {
-      if (backgroundFrame) {
-        context.drawImage(backgroundFrame, 0, 0, frame.width, frame.height);
-      } else {
-        context.drawImage(frame, 0, 0, frame.width, frame.height);
-      }
+    if (backgroundBitmap) {
+      context.drawImage(backgroundBitmap, 0, 0, frame.width, frame.height);
     } else {
-      context.filter = `blur(${Math.max(2, tuning.bilateralSigmaSpatial)}px)`;
-      context.drawImage(frame, 0, 0, frame.width, frame.height);
-      context.filter = 'none';
+      context.fillStyle = '#111827';
+      context.fillRect(0, 0, frame.width, frame.height);
     }
 
     tempContext.drawImage(frame, 0, 0, frame.width, frame.height);
@@ -462,6 +377,13 @@ export class WebGLRenderer {
   }
 
   destroy() {
+    this.backgroundBitmap?.close();
+    this.backgroundBitmap = null;
     this.gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  }
+
+  private reapplyBackgroundBitmap() {
+    if (!this.gl || !this.backgroundTexture || !this.backgroundBitmap) return;
+    uploadBitmap(this.gl, this.backgroundTexture, this.backgroundBitmap);
   }
 }

@@ -1,29 +1,8 @@
-export type BackgroundMode = 'image' | 'video' | 'solid' | 'blur';
-
-export interface SolidBackground {
-  mode: 'solid';
-  color: string;
-}
-
 export interface ImageBackground {
   mode: 'image';
   url: string;
   label?: string;
 }
-
-export interface VideoBackground {
-  mode: 'video';
-  url: string;
-  label?: string;
-  loop?: boolean;
-}
-
-export interface BlurBackground {
-  mode: 'blur';
-  strength?: number; // optional - used only for UI
-}
-
-export type BackgroundSource = SolidBackground | ImageBackground | VideoBackground | BlurBackground;
 
 export interface VirtualBackgroundTuning {
   temporalAlpha: number;
@@ -55,8 +34,6 @@ export interface EngineState {
   status: 'idle' | 'starting' | 'running' | 'stopping' | 'error';
   error: string | null;
   stats: EngineStats;
-  tuning: VirtualBackgroundTuning;
-  background: BackgroundSource;
 }
 
 export interface SegmentationFrameResult {

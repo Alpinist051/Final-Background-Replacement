@@ -1,36 +1,16 @@
-import { computed, onBeforeUnmount, onMounted, reactive, shallowRef } from 'vue';
-import type { BackgroundSource, EngineState, VirtualBackgroundTuning } from '@/types/engine';
+import { onBeforeUnmount, reactive, shallowRef } from 'vue';
+import type { EngineState, ImageBackground } from '@/types/engine';
 import { BackgroundEngine } from '@/core/BackgroundEngine';
+import { DEFAULT_BACKGROUND } from '@/constants/defaultBackground';
 
-const defaultTuning: VirtualBackgroundTuning = {
-  temporalAlpha: 0.62,
-  bilateralSigmaSpatial: 4,
-  bilateralSigmaColor: 0.1,
-  feather: 0.05,
-  lightWrap: 0.15,
-  confidenceBoost: 0.9,
-  motionBoost: 1,
-  brightnessBoost: 1.3
-};
-
-const defaultBackground: BackgroundSource = { mode: 'solid', color: '#111827' };
-
-function cloneBackgroundSource(background: BackgroundSource): BackgroundSource {
-  switch (background.mode) {
-    case 'solid':
-      return { mode: 'solid', color: background.color };
-    case 'image':
-      return { mode: 'image', url: background.url, label: background.label };
-    case 'video':
-      return { mode: 'video', url: background.url, label: background.label, loop: background.loop };
-    case 'blur':
-      return { mode: 'blur', strength: background.strength };
-  }
+function cloneBackgroundImage(background: ImageBackground): ImageBackground {
+  return { mode: 'image', url: background.url, label: background.label };
 }
 
 export function useVirtualBackground() {
   const canvasRef = shallowRef<HTMLCanvasElement | null>(null);
   const engineRef = shallowRef<BackgroundEngine | null>(null);
+  let currentBackground = cloneBackgroundImage(DEFAULT_BACKGROUND);
 
   const state = reactive<EngineState>({
     status: 'idle',
@@ -48,26 +28,20 @@ export function useVirtualBackground() {
       foregroundRatio: 0,
       maskMean: 0,
       confidenceMean: 0
-    },
-    tuning: { ...defaultTuning },
-    background: defaultBackground
+    }
   });
-
-  const processedTrack = computed(() => engineRef.value?.getProcessedTrack() ?? null);
 
   function ensureEngine() {
     if (engineRef.value || !canvasRef.value) return engineRef.value;
     engineRef.value = new BackgroundEngine(canvasRef.value, {
       onStats: (stats) => { state.stats = stats; },
       onStatus: (status) => { state.status = status; },
-      onQuality: (quality) => {
-        state.tuning = { ...state.tuning, temporalAlpha: quality.temporalAlpha };
-      },
       onError: (error) => {
         state.error = error;
         state.status = 'error';
       }
     });
+    void engineRef.value.setBackground(currentBackground);
     return engineRef.value;
   }
 
@@ -88,14 +62,10 @@ export function useVirtualBackground() {
     state.status = 'idle';
   }
 
-  function setTuning(next: Partial<VirtualBackgroundTuning>) {
-    state.tuning = { ...state.tuning, ...next };
-    engineRef.value?.setTuning(state.tuning);
-  }
-
-  async function setBackground(background: BackgroundSource) {
-    state.background = cloneBackgroundSource(background);
-    await engineRef.value?.setBackground(cloneBackgroundSource(background));
+  async function setBackground(background: ImageBackground) {
+    const nextBackground = cloneBackgroundImage(background);
+    currentBackground = nextBackground;
+    await engineRef.value?.setBackground(nextBackground);
   }
 
   function destroy() {
@@ -104,18 +74,14 @@ export function useVirtualBackground() {
     engineRef.value = null;
   }
 
-  // Auto-cleanup when component unmounts
-  onMounted(() => ensureEngine());
   onBeforeUnmount(() => destroy());
 
   return {
     state,
     canvasRef,
-    processedTrack,
     attachCanvas,
     start,
     stop,
-    setTuning,
     setBackground,
     destroy
   };

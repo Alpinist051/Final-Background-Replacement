@@ -2,24 +2,20 @@
   <main class="app-shell">
     <section class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Browser-only human segmentation</p>
-        <h1>Virtual background engine</h1>
+        <p class="eyebrow">Browser-only background replacement</p>
+        <h1>Virtual background demo</h1>
         <p class="lede">
-          MediaPipe human segmentation, worker scheduling, and WebGL compositing in a single Vue 3 app.
+          Upload a background image and replace the camera feed in real time.
         </p>
       </div>
       <div class="hero-metrics">
         <div class="metric-card">
-          <span>Mode</span>
+          <span>Status</span>
           <strong>{{ state.status }}</strong>
         </div>
         <div class="metric-card">
           <span>Live FPS</span>
           <strong>{{ state.stats.fps.toFixed(1) }}</strong>
-        </div>
-        <div class="metric-card">
-          <span>Pipeline</span>
-          <strong>Worker + GPU</strong>
         </div>
       </div>
     </section>
@@ -41,44 +37,30 @@
           <BackgroundSelector v-model="background" />
         </div>
       </div>
-
-      <div class="right-column">
-        <ControlsPanel v-model="tuning" :status="state.status" :stats="state.stats" />
-      </div>
     </section>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import CameraInput from '@/components/CameraInput.vue';
 import BackgroundSelector from '@/components/BackgroundSelector.vue';
-import ControlsPanel from '@/components/ControlsPanel.vue';
 import OutputPreview from '@/components/OutputPreview.vue';
 import { useVirtualBackground } from '@/composables/useVirtualBackground';
-import type { BackgroundSource, VirtualBackgroundTuning } from '@/types/engine';
+import type { ImageBackground } from '@/types/engine';
+import { DEFAULT_BACKGROUND } from '@/constants/defaultBackground';
 
-const { state, attachCanvas, start, stop, setTuning, setBackground } = useVirtualBackground();
+const { state, attachCanvas, start, stop, setBackground } = useVirtualBackground();
 const devices = ref<MediaDeviceInfo[]>([]);
 const deviceId = ref('');
-const background = ref<BackgroundSource>({ mode: 'solid', color: '#111827' });
-const tuning = computed<VirtualBackgroundTuning>({
-  get: () => state.tuning,
-  set: (value) => setTuning(value)
-});
+const background = ref<ImageBackground>({ ...DEFAULT_BACKGROUND });
 
 async function refreshDevices() {
   const entries = await navigator.mediaDevices.enumerateDevices();
   devices.value = entries.filter((entry) => entry.kind === 'videoinput');
 }
 
-watch(
-  background,
-  (value) => {
-    void setBackground(value);
-  },
-  { deep: true }
-);
+watch(background, (value) => { void setBackground(value); }, { immediate: true });
 
 onMounted(() => {
   void refreshDevices();

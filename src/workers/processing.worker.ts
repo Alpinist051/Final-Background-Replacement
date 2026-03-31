@@ -1,6 +1,6 @@
 import { createAnalysisCanvas } from '@/utils/canvasUtils';
 import { createPerformanceTracker } from '@/utils/performance';
-import type { BackgroundSource, EngineStats, VirtualBackgroundTuning } from '@/types/engine';
+import type { EngineStats, VirtualBackgroundTuning } from '@/types/engine';
 import { SegmentationManager } from '@/core/SegmentationManager';
 import { MaskProcessor } from '@/core/MaskProcessor';
 import { WebGLRenderer, type RenderFrameArgs } from '@/core/WebGLRenderer';
@@ -11,14 +11,12 @@ type InitMessage = {
   width: number;
   height: number;
   tuning: VirtualBackgroundTuning;
-  background: BackgroundSource;
 };
 
 type FrameMessage = {
   type: 'frame';
   frame: ImageBitmap;
   timestamp: number;
-  backgroundFrame?: ImageBitmap | null;
 };
 
 type UpdateTuningMessage = {
@@ -28,8 +26,7 @@ type UpdateTuningMessage = {
 
 type UpdateBackgroundMessage = {
   type: 'background';
-  background: BackgroundSource;
-  bitmap?: ImageBitmap;
+  bitmap: ImageBitmap;
 };
 
 type ResizeMessage = {
@@ -64,24 +61,20 @@ let currentTuning: VirtualBackgroundTuning = {
   temporalAlpha: 0.62,
   bilateralSigmaSpatial: 4,
   bilateralSigmaColor: 0.1,
-  feather: 0.05,
-  lightWrap: 0.15,
-  confidenceBoost: 0.9,
+  feather: 0.08,
+  lightWrap: 0.22,
+  confidenceBoost: 1.12,
   motionBoost: 1,
   brightnessBoost: 1
 };
-let currentBackground: BackgroundSource = { mode: 'solid', color: '#111827' };
 const performanceTracker = createPerformanceTracker();
 let previousLuma: Float32Array | null = null;
 let pendingFrame: ImageBitmap | null = null;
-let pendingBackgroundFrame: ImageBitmap | null = null;
 let sourceWidth = 1280;
 let sourceHeight = 720;
 let processingWidth = 640;
 let processingHeight = 480;
 let qualityTierIndex = 0;
-let lowFpsStreak = 0;
-let highFpsStreak = 0;
 let tickHandle: number | null = null;
 let lastMaskWarningAt = 0;
 const TARGET_FPS = 30;
@@ -198,12 +191,10 @@ async function handleInit(message: InitMessage) {
   renderer = new WebGLRenderer(message.canvas);
   sourceWidth = message.width;
   sourceHeight = message.height;
-  renderer.setBackground(message.background);
   segmenter = new SegmentationManager();
   await segmenter.initialize(message.width, message.height);
   maskProcessor = new MaskProcessor();
   currentTuning = message.tuning;
-  currentBackground = message.background;
   updateProcessingResolution(0, false);
   scheduleTick();
   postMessage({ type: 'ready' });
@@ -211,9 +202,7 @@ async function handleInit(message: InitMessage) {
 
 async function handleFrame(message: FrameMessage) {
   closeBitmap(pendingFrame);
-  closeBitmap(pendingBackgroundFrame);
   pendingFrame = message.frame;
-  pendingBackgroundFrame = message.backgroundFrame ?? null;
   scheduleTick();
 }
 
@@ -225,9 +214,7 @@ async function processTick() {
 
   const frameStart = performance.now();
   const sourceFrame = pendingFrame;
-  const sourceBackgroundFrame = pendingBackgroundFrame;
   pendingFrame = null;
-  pendingBackgroundFrame = null;
 
   const processedBitmap = await drawForProcessing(sourceFrame);
   const { brightness, motion } = computeLuma(processedBitmap);
@@ -254,8 +241,6 @@ async function processTick() {
     frame: processedBitmap,
     alphaMask: processedMask.alphaMask,
     confidenceMask: processedMask.confidenceMask,
-    backgroundFrame: sourceBackgroundFrame,
-    background: currentBackground,
     tuning: { ...tuning, temporalAlpha: adaptiveTemporalAlpha }
   };
 
@@ -286,7 +271,6 @@ async function processTick() {
 
   if (processedBitmap !== sourceFrame) processedBitmap.close();
   sourceFrame.close();
-  sourceBackgroundFrame?.close?.();
   postMessage({ type: 'frameProcessed' });
   scheduleTick();
 }
@@ -297,12 +281,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
   if (message.type === 'frame') { await handleFrame(message); return; }
   if (message.type === 'tuning') { currentTuning = message.tuning; return; }
   if (message.type === 'background') {
-    currentBackground = message.background;
-    renderer?.setBackground(message.background);
-    if (message.background.mode === 'image' && message.bitmap) {
-      renderer?.setBackgroundBitmap(message.bitmap);
-      message.bitmap.close();
-    }
+    renderer?.setBackgroundBitmap(message.bitmap);
     return;
   }
   if (message.type === 'resize') {
@@ -318,9 +297,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       tickHandle = null;
     }
     closeBitmap(pendingFrame);
-    closeBitmap(pendingBackgroundFrame);
     pendingFrame = null;
-    pendingBackgroundFrame = null;
     segmenter?.close();
     maskProcessor?.reset();
     renderer?.destroy();
